@@ -92,7 +92,32 @@ remotePort = 6001
 xfreerdp /u:test /p:Lana0423 /v:127.0.0.1:6001 /cert:ignore
 ```
 
-## 9. 常见问题
+## 9. frp 认证 token
+
+### 作用
+
+防止未授权客户端连接服务端。
+
+### 服务端配置
+
+```toml
+bindPort = 7000
+auth.token = "mySecretToken123"
+```
+
+### 客户端配置
+
+```toml
+serverAddr = "10.0.0.131"
+serverPort = 7000
+auth.token = "mySecretToken123"
+```
+
+### 注意
+
+服务端和客户端的 token 必须完全一致。
+
+## 10. 常见问题
 
 | 问题 | 排查方向 |
 | ---- | -------- |
@@ -101,6 +126,6 @@ xfreerdp /u:test /p:Lana0423 /v:127.0.0.1:6001 /cert:ignore
 | 代理不生效 | 检查 localIP 与 localPort |
 | RDP 连接失败 | 检查内网到目标 3389 端口是否连通 |
 
-## 10. 总结
+## 11. 总结
 
 frp 是红队内网穿透的核心工具，能够将内网 SSH、RDP、Web 服务映射到攻击机本地，配合后续横向移动使用。
