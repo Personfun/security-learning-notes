@@ -28,7 +28,20 @@ chisel 是一款单二进制的内网穿透工具，支持反向隧道和 SOCKS 
 ```bash
 ssh root@127.0.0.1 -p 6002
 ```
+## 6. 映射 Windows RDP
 
-## 6. 总结
+客户端命令：
+
+```bash
+./chisel client 10.0.0.131:7001 R:6002:127.0.0.1:22 R:6003:10.0.0.129:3389
+```
+
+在 Kali 上连接：
+
+```bash
+xfreerdp /u:test /p:Lana0423 /v:127.0.0.1:6003 /cert:ignore
+```
+
+## 7. 总结
 
 chisel 和 frp、nps 原理类似，但更轻量，适合快速建立反向隧道。
