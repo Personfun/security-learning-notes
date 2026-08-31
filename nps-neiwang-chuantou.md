@@ -92,6 +92,24 @@ ssh root@127.0.0.1 -p 6000
 
 成功登录 CentOS，说明 nps 隧道生效。
 
-## 11. 总结
+## 11. 映射 Windows RDP
+
+在 Web 面板新增 TCP 隧道：
+
+| 字段 | 值 |
+| ---- | ---- |
+| 客户端 ID | CentOS |
+| 服务端端口 | 6001 |
+| 目标地址 | 10.0.0.129:3389 |
+
+在 Kali 上连接：
+
+```bash
+xfreerdp /u:test /p:Lana0423 /v:127.0.0.1:6001 /cert:ignore
+```
+
+成功弹出 Windows 桌面，说明 nps 映射 RDP 成功。
+
+## 12. 总结
 
 nps 和 frp 原理相似，但 nps 提供 Web 管理面板，配置更直观。真实红队中常用于把内网 SSH、RDP 等端口映射出来，绕过防火墙限制。
