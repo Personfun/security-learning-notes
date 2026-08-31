@@ -6,6 +6,7 @@
 
 - [frp 内网穿透学习笔记](./frp-neiwang-chuantou.md)
 - [nps 内网穿透学习笔记](./nps-neiwang-chuantou.md)
+- [chisel 内网穿透学习笔记](./chisel-neiwang-chuantou.md)
 
 ## 学习路线
 
