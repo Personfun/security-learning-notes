@@ -2,11 +2,16 @@
 
 个人安全学习笔记仓库，记录红队、渗透测试、内网安全等学习内容。
 
-## 目录
+## 核心文档
+
+- [完整攻击链学习笔记](./complete-attack-chain.md)
+
+## 技术笔记
 
 - [frp 内网穿透学习笔记](./frp-neiwang-chuantou.md)
 - [nps 内网穿透学习笔记](./nps-neiwang-chuantou.md)
 - [chisel 内网穿透学习笔记](./chisel-neiwang-chuantou.md)
+- [PTH 与横向移动学习笔记](./pth-and-lateral-movement.md)
 
 ## 学习路线
 
