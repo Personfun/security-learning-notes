@@ -1,17 +1,24 @@
 # security-learning-notes
 
-个人安全学习笔记仓库，记录红队、渗透测试、内网安全等学习内容。
+个人安全学习笔记仓库，记录红队、渗透测试、内网安全、蓝队应急响应等学习内容。
 
 ## 核心文档
 
 - [完整攻击链学习笔记](./complete-attack-chain.md)
+- [蓝队应急响应完整流程链](./blue-team-response-chain.md)
 
-## 技术笔记
+## 红队笔记
 
 - [frp 内网穿透学习笔记](./frp-neiwang-chuantou.md)
 - [nps 内网穿透学习笔记](./nps-neiwang-chuantou.md)
 - [chisel 内网穿透学习笔记](./chisel-neiwang-chuantou.md)
 - [PTH 与横向移动学习笔记](./pth-and-lateral-movement.md)
+
+## 蓝队笔记
+
+- [Linux 应急响应学习笔记](./blue-linux-incident-response.md)
+- [Windows 应急响应学习笔记](./blue-windows-incident-response.md)
+- [应急响应报告编写指南](./security-incident-report-guide.md)
 
 ## 学习路线
 
@@ -21,6 +28,8 @@
 - 内网穿透与横向移动
 - 免杀基础
 - 蓝队应急响应
+- 代码审计
+- 灰黑产追踪与情报分析
 
 ## 说明
 
