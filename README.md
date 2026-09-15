@@ -1,83 +1,96 @@
 # security-learning-notes
 
-个人安全学习笔记仓库。记录我从 0 开始的红队渗透、内网安全、域渗透、蓝队应急响应、代码审计等学习内容与实战复盘。
+个人安全学习笔记仓库。本仓库记录了我从零开始学习红队渗透、内网安全、域渗透、蓝队应急响应、代码审计以及安全运营等内容的过程与实战复盘。
 
-## 📁 核心文档
-- ✅ [完整攻击链学习笔记](./Red-Team/Attack-Chain/complete-attack-chain.md)
-- ✅ [蓝队应急响应完整流程链](./Blue-Team/Incident-Response/03-response-chain.md)
+## 一、靶场实战记录
 
----
+记录各类靶场的完整攻击链、命令、踩坑记录和复盘总结。按实战场景和知识体系分为两大类。
 
-## 🎯 靶场实战笔记
+### 面试与CTF靶场（CTF-Practice）
+按日期和编号归档的面试实战环境，侧重于真实攻击链的完整复现与面试考点提炼。
 
-### 1. 面试与 CTF 靶场（CTF-Practice）
-按日期和编号归档的面试实战环境。
-- ✅ [Lab-01 靶场记录（国产CMS+Redis 提权场景）](./CTF-Practice/Lab-01/)
-- ✅ [Lab-02 靶场记录（本地 Docker 环境搭建与逃逸）](./CTF-Practice/Lab-02/)
-- 📝 *Lab-03 待更新...*
+- [Lab-01 靶场记录（某国产CMS + Redis 提权场景）](./CTF-Practice/Lab-01/)
+- [Lab-02 靶场记录（本地 Docker 环境搭建与容器逃逸）](./CTF-Practice/Lab-02/)
 
-### 2. 系统化学习靶场（Labs）
-按知识体系归档的各类经典靶场环境。
-- ✅ [MrRobot 靶场（WordPress + SUID 提权）](./Labs/MrRobot/)
-- ✅ [AD-Company-Lab 靶场（域渗透环境）](./Labs/AD-Company-Lab/)
-- ✅ [DVWA 靶场（Web 漏洞代码审计与绕过）](./Labs/DVWA/)
-- ✅ [CTFHub 靶场（CTF 技能树与解题思路）](./Labs/CTFHub/)
+### 系统化学习靶场（Labs）
+按知识体系归档的各类经典靶场环境，侧重于漏洞原理、代码审计与防御视角的对照学习。
 
----
+- [MrRobot 靶场（WordPress渗透与SUID提权）](./Labs/MrRobot/)
+- [AD-Company-Lab 靶场（Active Directory 域渗透环境）](./Labs/AD-Company-Lab/)
+- [DVWA 靶场（Web漏洞代码审计与四难度绕过）](./Labs/DVWA/)
+- [CTFHub 靶场（CTF技能树与解题思路）](./Labs/CTFHub/)
 
-## 🔴 红队攻防笔记
+## 二、红队攻防笔记
 
-### Web 安全
-- ✅ [SQL 注入学习笔记](./Red-Team/Web-Security/01-sql-injection.md)
-- 📝 XSS 跨站脚本（待补充）
-- 📝 CSRF 与 SSRF（待补充）
-- 📝 文件上传与命令注入（待补充）
-- 📝 代码审计（PHP 基础、真实 CMS 审计，待补充）
+记录红队渗透过程中的信息收集、漏洞利用、权限提升与横向移动等技术细节。
+
+### Web安全
+涵盖常见Web漏洞的原理、利用方式、代码审计方法及防御手段。
+- [SQL注入学习笔记](./Red-Team/Web-Security/01-sql-injection.md)
+- [XSS跨站脚本学习笔记](./Red-Team/Web-Security/02-xss.md)
+- [CSRF与SSRF学习笔记](./Red-Team/Web-Security/03-csrf-ssrf.md)
+- [文件上传与命令注入学习笔记](./Red-Team/Web-Security/04-file-upload-and-command-injection.md)
+- [代码审计学习笔记](./Red-Team/Web-Security/05-code-audit.md)
 
 ### 内网渗透与隧道
-- ✅ [frp 内网穿透学习笔记](./Red-Team/Internal-Pentest/01-frp.md)
-- ✅ [nps 内网穿透学习笔记](./Red-Team/Internal-Pentest/02-nps.md)
-- ✅ [chisel 内网穿透学习笔记](./Red-Team/Internal-Pentest/03-chisel.md)
-- ✅ [PTH 与横向移动学习笔记](./Red-Team/Internal-Pentest/04-pth-and-lateral-movement.md)
+记录内网穿透工具的使用、代理搭建以及横向移动技术。
+- [frp内网穿透学习笔记](./Red-Team/Internal-Pentest/01-frp.md)
+- [nps内网穿透学习笔记](./Red-Team/Internal-Pentest/02-nps.md)
+- [chisel内网穿透学习笔记](./Red-Team/Internal-Pentest/03-chisel.md)
+- [PTH与横向移动学习笔记](./Red-Team/Internal-Pentest/04-pth-and-lateral-movement.md)
 
-### 提权与权限维持（📝 待补充）
-- 📝 Linux 提权 (SUID, Sudo, Crontab, 内核漏洞)
-- 📝 Windows 提权 (Potato 系列, PrintSpoofer)
-- 📝 Docker 容器逃逸
-- 📝 Windows 权限维持 (隐藏用户, 注册表, 计划任务, 粘滞键, WMI后门)
+### 提权与权限维持
+记录Linux与Windows环境下的提权思路、漏洞利用以及后门持久化技术。
+- [Linux提权学习笔记](./Red-Team/Privilege-Escalation/01-linux-privesc.md)
+- [Windows提权与权限维持学习笔记](./Red-Team/Privilege-Escalation/02-windows-privesc.md)
 
-### 域渗透（📝 待补充）
-- 📝 Kerberoasting、AS-REP Roasting、DCSync、黄金票据
+### 域渗透
+记录Active Directory环境下的信息收集、Kerberos协议攻击与域控权限获取。
+- [域渗透（Active Directory）学习笔记](./Red-Team/AD-Pentest/01-domain-pentest.md)
 
-### 免杀与 C2（📝 待补充）
-- 📝 MSF 深度使用、Cobalt Strike 基础、免杀基础
+## 三、蓝队防御笔记
 
----
-
-## 🔵 蓝队防御笔记
+记录蓝队视角下的日志分析、应急响应、安全设备原理以及合规建设。
 
 ### 应急响应
-- ✅ [Linux 应急响应学习笔记](./Blue-Team/Incident-Response/01-linux-incident-response.md)
-- ✅ [Windows 应急响应学习笔记](./Blue-Team/Incident-Response/02-windows-incident-response.md)
-- ✅ [应急响应报告编写指南](./Blue-Team/Incident-Response/04-report-guide.md)
+涵盖Linux/Windows环境下的入侵排查、木马清除、痕迹分析与报告编写。
+- [Linux应急响应学习笔记](./Blue-Team/Incident-Response/01-linux-incident-response.md)
+- [Windows应急响应学习笔记](./Blue-Team/Incident-Response/02-windows-incident-response.md)
+- [蓝队应急响应完整流程链](./Blue-Team/Incident-Response/03-response-chain.md)
+- [应急响应报告编写指南](./Blue-Team/Incident-Response/04-report-guide.md)
 
-### 日志分析与威胁狩猎（📝 待补充）
-- 📝 日志分析 (Linux secure, Windows 事件 ID, Sysmon)
-- 📝 威胁狩猎基础与实战
+### 日志分析与威胁狩猎
+涵盖Windows核心事件ID、Linux日志分析、Sysmon部署及SIEM关联告警。
+- [Windows日志分析与核心事件ID](./Blue-Team/Log-Analysis/01-windows-event-ids.md)
+- [Linux日志分析与应急响应排查](./Blue-Team/Log-Analysis/02-linux-logs.md)
+- [Sysmon与SIEM基础](./Blue-Team/Log-Analysis/03-sysmon-and-siem.md)
 
----
+### 安全设备与运营
+记录常见安全防护设备的原理、部署模式及红蓝对抗中的绕过与检测。
+- [WAF、IDS与HIDS学习笔记](./Blue-Team/Security-Devices/01-waf-ids-hids.md)
 
-## 🚀 学习路线
+### 等保合规
+记录国内网络安全等级保护（等保2.0）的定级、备案、建设整改与测评流程。
+- [等保2.0基础与流程](./Blue-Team/Compliance/01-classified-protection.md)
 
-- Web 渗透测试
-- Linux / Windows 提权
-- Docker 容器逃逸
-- 内网穿透与横向移动
-- 免杀基础
-- 蓝队应急响应
-- 代码审计
-- 灰黑产追踪与情报分析
+## 四、进阶与拓展
 
-## 📌 说明
+记录安全领域的前沿技术和主动防御思维。
+- [威胁狩猎基础](./Advanced-Topics/01-threat-hunting.md)
+- [灰黑产追踪与威胁情报分析](./Advanced-Topics/02-cybercrime-tracking.md)
+- [移动端安全基础（Android / iOS）](./Advanced-Topics/03-mobile-security.md)
+
+## 五、学习路线
+
+- Web渗透测试与代码审计
+- Linux / Windows 提权与权限维持
+- Docker容器逃逸与内网横向移动
+- 内网穿透与域渗透
+- 免杀基础与C2工具使用
+- 蓝队应急响应与日志分析
+- 安全设备部署与威胁狩猎
+- 等保合规与灰黑产追踪
+
+## 六、说明
 
 本仓库仅用于个人学习记录。所有技术内容均用于合法授权的安全测试，严禁用于非法用途。
