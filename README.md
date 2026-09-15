@@ -12,7 +12,7 @@
 记录 CTF、面试靶场和渗透练习环境的完整攻击链与复盘，按日期和编号进行归档。
 
 - [CTF 靶场练习总目录](./CTF-Practice/)
-  - [Lab-01 靶场记录（易优CMS+Redis 提权场景）](./CTF-Practice/Lab-01/)
+  - [Lab-01 靶场记录（国产CMS+Redis 提权场景）](./CTF-Practice/Lab-01/)
 
 ## 红队笔记
 
