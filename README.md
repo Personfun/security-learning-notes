@@ -13,6 +13,7 @@
 
 - [CTF 靶场练习总目录](./CTF-Practice/)
   - [Lab-01 靶场记录（国产CMS+Redis 提权场景）](./CTF-Practice/Lab-01/)
+  - [Lab-02 靶场记录（本地 Docker 环境搭建与逃逸）](./CTF-Practice/Lab-02/)
 
 ## 红队笔记
 
