@@ -12,8 +12,14 @@
 记录 CTF、面试靶场和渗透练习环境的完整攻击链与复盘，按日期和编号进行归档。
 
 - [CTF 靶场练习总目录](./CTF-Practice/)
-  - [Lab-01 靶场记录（国产CMS+Redis 提权场景）](./CTF-Practice/Lab-01/)
+  - [Lab-01 靶场记录（易优CMS+Redis 提权场景）](./CTF-Practice/Lab-01/)
   - [Lab-02 靶场记录（本地 Docker 环境搭建与逃逸）](./CTF-Practice/Lab-02/)
+
+- [系统化学习靶场总目录](./Labs/)
+  - [MrRobot 靶场（WordPress + SUID 提权）](./Labs/MrRobot/)
+  - [AD-Company-Lab 靶场（域渗透环境）](./Labs/AD-Company-Lab/)
+  - [DVWA 靶场（Web 漏洞练习）](./Labs/DVWA/)
+  - [CTFHub 靶场（CTF 入门与练习）](./Labs/CTFHub/)
 
 ## 红队笔记
 
