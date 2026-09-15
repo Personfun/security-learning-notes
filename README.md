@@ -7,6 +7,13 @@
 - [完整攻击链学习笔记](./complete-attack-chain.md)
 - [蓝队应急响应完整流程链](./blue-team-response-chain.md)
 
+## 靶场实战笔记
+
+记录 CTF、面试靶场和渗透练习环境的完整攻击链与复盘，按日期和编号进行归档。
+
+- [CTF 靶场练习总目录](./CTF-Practice/)
+  - [Lab-01 靶场记录（易优CMS+Redis 提权场景）](./CTF-Practice/Lab-01/)
+
 ## 红队笔记
 
 - [frp 内网穿透学习笔记](./frp-neiwang-chuantou.md)
