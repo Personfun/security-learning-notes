@@ -172,3 +172,88 @@ DES 关卡的服务端解密报错 `error:0308010C:digital envelope routines::un
 属于靶场自身兼容性问题，非逆向错误。**实战中 DES 已淘汰，重点掌握 AES 和 RSA。**
 
 > 注：DES 关卡因 PHP 8.2 + OpenSSL 3.x 默认禁用 DES 而报错，已跳过，重点练习 AES 与 RSA。
+
+## 九、纯 RSA 关卡实战
+
+### 9.1 前端加密逻辑
+定位 `sendEncryptedDataRSA` 函数：
+- **算法**：RSA（非对称加密）
+- **公钥**：明文写死在 JS 中（`MIGfMA0GCSq...`）
+- **填充**：PKCS#1 v1.5
+- **加密对象**：整个 JSON（`{"username":"admin","password":"123456"}`）
+- **输出**：Base64，再经 URL 编码（`URLSearchParams`）
+- **请求体**：`data=<密文>`
+
+### 9.2 Python 复现
+```python
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_v1_5
+import base64
+import json
+import urllib.parse
+
+# 公钥（前端 JS 里的）
+public_key_pem = b"""-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDRvA7giwinEkaTYllDYCkzujvi
+NH+up0XAKXQot8RixKGpB7nr8AdidEvuo+wVCxZwDK3hlcRGrrqt0Gxqwc11btlM
+DSj92Mr3xSaJcshZU8kfj325L8DRh9jpruphHBfh955ihvbednGAvOHOrz3Qy3Cb
+ocDbsNeCwNpRxwjIdQIDAQAB
+-----END PUBLIC KEY-----"""
+
+# 私钥（服务端 rsa.php 里的）
+private_key_pem = b"""-----BEGIN RSA PRIVATE KEY-----
+MIICXAIBAAKBgQDRvA7giwinEkaTYllDYCkzujviNH+up0XAKXQot8RixKGpB7nr
+8AdidEvuo+wVCxZwDK3hlcRGrrqt0Gxqwc11btlMDSj92Mr3xSaJcshZU8kfj325
+L8DRh9jpruphHBfh955ihvbednGAvOHOrz3Qy3CbocDbsNeCwNpRxwjIdQIDAQAB
+AoGAMek68RylFn025mQFMg90PqcXESHFMN8FrlEvH3F7/rUkc4EvMYKRf1CFsWi5
+Cdj1ofyidIibiOaT7kEnS9CK//SmY+1628/eyngOvOR9ADsHN/JRlJ3dHathcBrr
+1GENlCB9EmN+Fzhh7vEC2RUPrkkHCYGU2j+9rkzHUCXxLpECQQD5jgm9K7bvsOzM
+82v6avdNFAV/9ILdple1xlCfcEuWgnRztxTS6fbVguDCkB95yQq/WT2XzuohUMSG
+0uGGemlbAkEA1ya+aG8bRNlEC4yGiROSWZOiFBtiUhMyDGQ4E/FUifNdZSft5jSE
+gqUZZYJNchyKSXWtFKyclvJjcnflKxBubwJAT7eexs4bDvA+hK3RtVnMC9Q0eY5a
+64ECja9++598leSwXHKEdWeFkOjQ8XXmiBm/lCZmtYLEacYKMWNV5YZe9wJAMYM/
+CnWXRu7hE+9Q/ra8VVT+VbY/mDfGqsddiGlfVSfmdGMOAo5PeGlaQNwNypb61BD6
+telLWAmMDUm+OXzcjQJBAJGn+vI0JV7OI0m4QpSucn/rJ9pAYJG4HE/MOQcgHog0
+AeussmDIlr+wqWr+iJxYfJHc8ikTRSeTgqavruZs2Hg=
+-----END RSA PRIVATE KEY-----"""
+
+pub = RSA.import_key(public_key_pem)
+priv = RSA.import_key(private_key_pem)
+
+# 1. 明文
+plaintext = json.dumps({"username": "admin", "password": "123456"}, separators=(',', ':'))
+print(f"[*] 明文 JSON: {plaintext}")
+
+# 2. RSA 加密
+cipher_enc = PKCS1_v1_5.new(pub)
+encrypted = cipher_enc.encrypt(plaintext.encode('utf-8'))
+b64_cipher = base64.b64encode(encrypted).decode('utf-8')
+print(f"[*] RSA 密文: {b64_cipher}")
+
+# 3. 立刻用私钥解密验证（不经过任何复制粘贴）
+cipher_dec = PKCS1_v1_5.new(priv)
+sentinel = object()
+decrypted = cipher_dec.decrypt(base64.b64decode(b64_cipher), sentinel)
+print(f"[*] 解密结果: {decrypted}")
+print(f"[*] 是否与明文一致: {decrypted.decode('utf-8') == plaintext}")
+
+# 4. 生成 URL 编码后的密文（用于 Burp）
+url_encoded = urllib.parse.quote(b64_cipher, safe='')
+print(f"\n[*] 用于 Burp 的 URL 编码密文:\n{url_encoded}")
+```
+
+**关键验证**：因为 RSA 每次加密结果都不同，所以不能用"密文对比"验证。
+正确姿势是：**用私钥自解密，比对明文是否一致**。
+
+### 9.3 踩坑记录：密文里的 `+` 号
+RSA 密文是 Base64，包含 `+`、`/`、`=`。
+- 直接放到 URL 参数里，`+` 会被当作空格，`/` 会被路径解析，`=` 会被参数解析。
+- 前端用 `URLSearchParams` 自动做了 URL 编码。
+- Python 里用 `urllib.parse.quote(cipher, safe='')` 对齐。
+- 一次错误示范：直接复制密文进 Burp，返回 `Missing username or password`。
+- 正确做法：Python 里生成密文后立刻 URL 编码，再放进 Burp，返回 `{"success":true}`。
+
+### 9.4 核心认知
+- RSA 公钥是**公开的**，逆向目标是"提取公钥并复现加密"，不是"破解"。
+- RSA 每次加密结果都不同（内含随机填充），不能像 AES 那样"密文对比"。
+- RSA 加密长度有限（≤密钥长度-11字节），所以真实业务用 **AES+RSA 混合加密**（AES 加密数据，RSA 加密 AES 密钥）。
