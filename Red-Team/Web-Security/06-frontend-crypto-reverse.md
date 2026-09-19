@@ -170,3 +170,5 @@ print(f"[*] AES 密文 (Base64): {base64_result}")
 DES 关卡的服务端解密报错 `error:0308010C:digital envelope routines::unsupported`。
 原因是 PHP 8.2 底层的 OpenSSL 3.x 默认禁用了 DES 算法（移到了 legacy provider）。
 属于靶场自身兼容性问题，非逆向错误。**实战中 DES 已淘汰，重点掌握 AES 和 RSA。**
+
+> 注：DES 关卡因 PHP 8.2 + OpenSSL 3.x 默认禁用 DES 而报错，已跳过，重点练习 AES 与 RSA。
