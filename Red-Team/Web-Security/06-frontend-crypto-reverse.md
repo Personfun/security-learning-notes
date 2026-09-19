@@ -111,3 +111,62 @@ pip3 install pycryptodome
 排查发现，PHP 8.2 底层的 OpenSSL 3.x 默认禁用了 DES 算法（移到了 legacy provider），
 属于靶场自身的兼容性问题，并非前端逆向出错。
 解决方案：跳过 DES 关卡，直接使用 AES 关卡进行学习（AES 在 OpenSSL 3.x 中正常支持）。
+
+## 八、实战验证：AES 固定 Key 关卡
+
+### 8.1 前端加密逻辑分析
+通过 DevTools 定位 `sendDataAes` 函数，分析出：
+- **算法**：AES-128-CBC
+- **Key**：`1234567890123456`（写死）
+- **IV**：`1234567890123456`（写死）
+- **填充**：Pkcs7
+- **加密范围**：整个 JSON（`{"username":"admin","password":"123456"}`）
+- **输出格式**：Base64，再经 URL 编码
+
+### 8.2 Python 复现验证
+```python
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+import base64
+import json
+
+# 1. 明文（和前端一样，用 JSON 格式）
+username = "admin"
+password = "123456"
+plaintext = json.dumps({"username": username, "password": password}, separators=(',', ':'))
+print(f"[*] 明文 JSON: {plaintext}")
+
+# 2. Key 和 IV（写死的）
+key = b'1234567890123456'
+iv = b'1234567890123456'
+
+# 3. AES-CBC-Pkcs7 加密
+cipher = AES.new(key, AES.MODE_CBC, iv)
+padded = pad(plaintext.encode('utf-8'), AES.block_size)
+encrypted_bytes = cipher.encrypt(padded)
+
+# 4. 转 Base64（前端 toString() 默认就是这个）
+base64_result = base64.b64encode(encrypted_bytes).decode('utf-8')
+print(f"[*] AES 密文 (Base64): {base64_result}")
+```
+
+**验证结果**：
+- Python 生成：`nArXfVdnoe67UzojAPP2X+6qSiznLMBAI3a5Bi+zlNzXaUb9+gTXusl67b+DS9Zw`
+- Burp 抓包（URL 解码后）：完全一致
+
+### 8.3 武器化爆破实战
+1. 用 Python 批量生成 20 个常见密码的 AES 密文，输出到 `aes_payloads.txt`
+2. Burp Intruder 配置 Positions（只标记 `encryptedData=` 后的密文段）
+3. Payloads 加载 `aes_payloads.txt`
+4. Start Attack
+5. **结果**：第 1 条（`123456`）返回 Length=16，Response=`{"success":true}`，命中！
+
+### 8.4 关键经验
+- **Length 是判断依据**：成功响应 vs 失败响应的 Body 长度差异明显
+- **URL 编码要处理**：前端用了 `encodeURIComponent`，Python 里用 `urllib.parse.quote` 对齐
+- **JSON 分隔符要严格对齐**：`json.dumps(..., separators=(',', ':'))` 保证和 `JSON.stringify` 一致（无空格）
+
+### 8.5 踩坑记录（DES 关卡）
+DES 关卡的服务端解密报错 `error:0308010C:digital envelope routines::unsupported`。
+原因是 PHP 8.2 底层的 OpenSSL 3.x 默认禁用了 DES 算法（移到了 legacy provider）。
+属于靶场自身兼容性问题，非逆向错误。**实战中 DES 已淘汰，重点掌握 AES 和 RSA。**
