@@ -106,3 +106,8 @@ print(f"[*] 前端密文 (Hex): {encrypted_bytes.hex()}")
 ```bash
 pip3 install pycryptodome
 ```
+## 踩坑记录
+在 DES 关卡中，服务端解密始终报错 `error:0308010C:digital envelope routines::unsupported`。
+排查发现，PHP 8.2 底层的 OpenSSL 3.x 默认禁用了 DES 算法（移到了 legacy provider），
+属于靶场自身的兼容性问题，并非前端逆向出错。
+解决方案：跳过 DES 关卡，直接使用 AES 关卡进行学习（AES 在 OpenSSL 3.x 中正常支持）。
