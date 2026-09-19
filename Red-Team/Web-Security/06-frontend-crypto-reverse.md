@@ -257,3 +257,135 @@ RSA 密文是 Base64，包含 `+`、`/`、`=`。
 - RSA 公钥是**公开的**，逆向目标是"提取公钥并复现加密"，不是"破解"。
 - RSA 每次加密结果都不同（内含随机填充），不能像 AES 那样"密文对比"。
 - RSA 加密长度有限（≤密钥长度-11字节），所以真实业务用 **AES+RSA 混合加密**（AES 加密数据，RSA 加密 AES 密钥）。
+
+## 十、AES+RSA 混合加密（工业级方案）
+
+### 10.1 业务场景
+真实业务（如App 登录）的工业级方案：
+- **AES 加密数据主体**（快）
+- **RSA 加密 AES 的 Key/IV**（安全传输密钥）
+- **每次登录随机生成 Key/IV**（防重放、防分析）
+
+### 10.2 前端加密流程
+定位 `sendDataAesRsa` 函数，逻辑如下：
+1. `CryptoJS.lib.WordArray.random(16)` 生成随机 AES Key 和 IV
+2. 用 AES-128-CBC-Pkcs7 加密整个 JSON，输出 Base64
+3. 用 RSA 公钥分别加密 **AES Key 的 Base64 字符串** 和 **IV 的 Base64 字符串**
+4. 组装三个字段发送：`encryptedData`、`encryptedKey`、`encryptedIv`
+
+### 10.3 服务端解密流程（从源码读出）
+```php
+$aesKey = decryptRSA($encryptedKey, $privateKey);  // RSA 解密 → 得到 Base64 字符串
+$aesIv  = decryptRSA($encryptedIv,  $privateKey);
+
+$decryptedData = openssl_decrypt(
+    base64_decode($encryptedData),
+    'aes-128-cbc',
+    base64_decode($aesKey),   // 再 base64_decode 才得到 16 字节
+    OPENSSL_RAW_DATA,
+    base64_decode($aesIv)
+);
+```
+
+### 10.4 Python 复现
+```python
+from Crypto.Cipher import AES, PKCS1_v1_5
+from Crypto.PublicKey import RSA
+from Crypto.Util.Padding import pad
+import base64
+import json
+import os
+
+# 前端 JS 里的公钥
+public_key_pem = b"""-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDRvA7giwinEkaTYllDYCkzujvi
+NH+up0XAKXQot8RixKGpB7nr8AdidEvuo+wVCxZwDK3hlcRGrrqt0Gxqwc11btlM
+DSj92Mr3xSaJcshZU8kfj325L8DRh9jpruphHBfh955ihvbednGAvOHOrz3Qy3Cb
+ocDbsNeCwNpRxwjIdQIDAQAB
+-----END PUBLIC KEY-----"""
+
+# 服务端私钥（用于本地自检）
+private_key_pem = b"""-----BEGIN RSA PRIVATE KEY-----
+MIICXAIBAAKBgQDRvA7giwinEkaTYllDYCkzujviNH+up0XAKXQot8RixKGpB7nr
+8AdidEvuo+wVCxZwDK3hlcRGrrqt0Gxqwc11btlMDSj92Mr3xSaJcshZU8kfj325
+L8DRh9jpruphHBfh955ihvbednGAvOHOrz3Qy3CbocDbsNeCwNpRxwjIdQIDAQAB
+AoGAMek68RylFn025mQFMg90PqcXESHFMN8FrlEvH3F7/rUkc4EvMYKRf1CFsWi5
+Cdj1ofyidIibiOaT7kEnS9CK//SmY+1628/eyngOvOR9ADsHN/JRlJ3dHathcBrr
+1GENlCB9EmN+Fzhh7vEC2RUPrkkHCYGU2j+9rkzHUCXxLpECQQD5jgm9K7bvsOzM
+82v6avdNFAV/9ILdple1xlCfcEuWgnRztxTS6fbVguDCkB95yQq/WT2XzuohUMSG
+0uGGemlbAkEA1ya+aG8bRNlEC4yGiROSWZOiFBtiUhMyDGQ4E/FUifNdZSft5jSE
+gqUZZYJNchyKSXWtFKyclvJjcnflKxBubwJAT7eexs4bDvA+hK3RtVnMC9Q0eY5a
+64ECja9++598leSwXHKEdWeFkOjQ8XXmiBm/lCZmtYLEacYKMWNV5YZe9wJAMYM/
+CnWXRu7hE+9Q/ra8VVT+VbY/mDfGqsddiGlfVSfmdGMOAo5PeGlaQNwNypb61BD6
+telLWAmMDUm+OXzcjQJBAJGn+vI0JV7OI0m4QpSucn/rJ9pAYJG4HE/MOQcgHog0
+AeussmDIlr+wqWr+iJxYfJHc8ikTRSeTgqavruZs2Hg=
+-----END RSA PRIVATE KEY-----"""
+
+# ===== 加密流程（复现前端） =====
+
+# 1. 随机生成 16 字节 AES Key 和 IV
+aes_key = os.urandom(16)
+aes_iv  = os.urandom(16)
+
+# 2. AES-128-CBC 加密 JSON，输出 Base64
+plaintext = json.dumps({"username": "admin", "password": "123456"}, separators=(',', ':'))
+cipher_aes = AES.new(aes_key, AES.MODE_CBC, aes_iv)
+encrypted_data = base64.b64encode(cipher_aes.encrypt(pad(plaintext.encode(), 16))).decode()
+
+# 3. 用 RSA 公钥加密 AES Key 和 IV 的 Base64 字符串
+# ⚠️ 前端是：aesKey.toString(CryptoJS.enc.Base64) —— 先转 Base64 字符串再 RSA
+aes_key_b64 = base64.b64encode(aes_key).decode()
+aes_iv_b64  = base64.b64encode(aes_iv).decode()
+
+rsa_pub = RSA.import_key(public_key_pem)
+cipher_rsa = PKCS1_v1_5.new(rsa_pub)
+encrypted_key = base64.b64encode(cipher_rsa.encrypt(aes_key_b64.encode())).decode()
+encrypted_iv  = base64.b64encode(cipher_rsa.encrypt(aes_iv_b64.encode())).decode()
+
+# 4. 组装 JSON
+body = {
+    "encryptedData": encrypted_data,
+    "encryptedKey": encrypted_key,
+    "encryptedIv": encrypted_iv
+}
+print("[*] 请求体 JSON:")
+print(json.dumps(body, indent=2))
+
+# ===== 自检：模拟服务端解密（不依赖靶场，验证脚本正确性） =====
+
+rsa_priv = RSA.import_key(private_key_pem)
+cipher_rsa_dec = PKCS1_v1_5.new(rsa_priv)
+
+# 服务端流程：base64_decode(密文) → RSA解密 → 得到 Base64 字符串 → 再 base64_decode
+decrypted_key_b64 = cipher_rsa_dec.decrypt(base64.b64decode(encrypted_key), None).decode()
+decrypted_iv_b64  = cipher_rsa_dec.decrypt(base64.b64decode(encrypted_iv), None).decode()
+
+# 再解码一次得到真正的 16 字节
+decoded_key = base64.b64decode(decrypted_key_b64)
+decoded_iv  = base64.b64decode(decrypted_iv_b64)
+
+print(f"\n[*] 解出的 AES Key (hex): {decoded_key.hex()}")
+print(f"[*] 解出的 AES IV  (hex): {decoded_iv.hex()}")
+print(f"[*] Key 是否一致: {decoded_key == aes_key}")
+print(f"[*] IV  是否一致: {decoded_iv == aes_iv}")
+
+# 用解出的 Key/IV 解密数据
+cipher_aes_dec = AES.new(decoded_key, AES.MODE_CBC, decoded_iv)
+decrypted_data = cipher_aes_dec.decrypt(base64.b64decode(encrypted_data))
+# 去掉 Pkcs7 填充（最后一个字节的值 = 填充长度）
+pad_len = decrypted_data[-1]
+decrypted_json = decrypted_data[:-pad_len].decode()
+print(f"[*] 解出的明文 JSON: {decrypted_json}")
+print(f"[*] 是否与原始明文一致: {decrypted_json == plaintext}")
+```
+
+### 10.5 关键坑点
+1. **RSA 加密的对象是 Base64 字符串**，不是原始 16 字节。前端是 `aesKey.toString(Base64)`，服务端要再 `base64_decode` 一次。
+2. **AES 模式是 CBC，填充是 Pkcs7，块大小是 16**。
+3. **RSA 加密后的 Base64 密文里包含 `+/=`**，如果目标是 form-urlencoded 要 URL 编码，但本靶场是 JSON 请求体，不用编码。
+4. **本地自检方法**：用服务端源码里的私钥，在 Python 里解密自己生成的密文，验证明文是否一致。
+
+### 10.6 核心认知
+- **RSA 只加密密钥，不加密数据**——这是混合加密的精髓。
+- **AES Key 每次随机**——即使同一个密码，每次请求密文都不同。
+- **本地自检胜过盲目爆破**——先证明"我加密的，自己能解开"，再发出去验证。
