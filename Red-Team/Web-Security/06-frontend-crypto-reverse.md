@@ -364,3 +364,69 @@ pip3 install pycryptodome
 ```
 
 > 注：安装包名是 `pycryptodome`，但导入时用 `from Crypto.xxx import xxx`，是历史兼容原因。
+
+# 十、HMAC-SHA256 签名 + 防重放关卡
+
+## 10.1 前端加密逻辑
+定位 `sendDataWithNonce` 函数：
+- **哈希函数**：HMAC-SHA256
+- **盐（Secret）**：`be56e057f20f883e`
+- **拼接规则**：`username + password + nonce + timestamp`（无分隔符）
+- **nonce 生成**：`Math.random().toString(36).substring(2)`
+- **timestamp**：`Math.floor(Date.now() / 1000)`（秒级）
+- **输出**：Hex
+
+## 10.2 Python 复现
+```python
+import hmac
+import hashlib
+import json
+import time
+import random
+import string
+
+# 生成 nonce（12 位小写字母+数字）
+def gen_nonce():
+    chars = string.ascii_lowercase + string.digits
+    return ''.join(random.choice(chars) for _ in range(12))
+
+# 输入
+username = "admin"
+password = "123456"
+nonce = gen_nonce()             # ← 每次随机
+timestamp = int(time.time())    # ← 每次当前时间
+secret = "be56e057f20f883e"
+
+# 拼接
+message = username + password + nonce + str(timestamp)
+print(f"[*] nonce:     {nonce}")
+print(f"[*] timestamp: {timestamp}")
+print(f"[*] 待签名原文: {message}")
+
+# HMAC-SHA256
+signature = hmac.new(
+    secret.encode('utf-8'),
+    message.encode('utf-8'),
+    hashlib.sha256
+).hexdigest()
+print(f"[*] signature: {signature}")
+
+# 组装 JSON
+body = {
+    "username": username,
+    "password": password,
+    "nonce": nonce,
+    "timestamp": timestamp,
+    "signature": signature
+}
+print("\n[*] 请求体 JSON:")
+print(json.dumps(body, indent=2))
+```
+
+## 10.3 验证结果
+- Python 生成新请求 → Burp 发送 → 服务端返回 `{"success":true}`
+
+## 10.4 关键认知
+- HMAC-SHA256 比纯 MD5/SHA256 更安全，盐作为算法参数传入。
+- 拼接规则没有分隔符时要注意顺序，控制变量法可以推导。
+- 时间戳和 nonce 是防重放的核心机制。
