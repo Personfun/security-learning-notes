@@ -365,9 +365,9 @@ pip3 install pycryptodome
 
 > 注：安装包名是 `pycryptodome`，但导入时用 `from Crypto.xxx import xxx`，是历史兼容原因。
 
-# 十、HMAC-SHA256 签名 + 防重放关卡
+## 十、HMAC-SHA256 签名 + 防重放关卡
 
-## 10.1 前端加密逻辑
+### 10.1 前端加密逻辑
 定位 `sendDataWithNonce` 函数：
 - **哈希函数**：HMAC-SHA256
 - **盐（Secret）**：`be56e057f20f883e`
@@ -376,7 +376,7 @@ pip3 install pycryptodome
 - **timestamp**：`Math.floor(Date.now() / 1000)`（秒级）
 - **输出**：Hex
 
-## 10.2 Python 复现
+### 10.2 Python 复现
 ```python
 import hmac
 import hashlib
@@ -423,10 +423,87 @@ print("\n[*] 请求体 JSON:")
 print(json.dumps(body, indent=2))
 ```
 
-## 10.3 验证结果
+### 10.3 验证结果
 - Python 生成新请求 → Burp 发送 → 服务端返回 `{"success":true}`
 
-## 10.4 关键认知
+### 10.4 关键认知
 - HMAC-SHA256 比纯 MD5/SHA256 更安全，盐作为算法参数传入。
 - 拼接规则没有分隔符时要注意顺序，控制变量法可以推导。
 - 时间戳和 nonce 是防重放的核心机制。
+
+## 十一、禁止重放关卡实战
+
+### 11.1 前端加密逻辑
+定位 `sendLoginRequest` + `generateRequestData` 函数：
+- **加密对象**：毫秒级时间戳 `Date.now()`
+- **加密方式**：RSA 公钥加密
+- **发送字段**：`username` + `password` + `random`（加密后的时间戳）
+- **请求格式**：JSON
+
+### 11.2 服务端防重放机制（从源码读出）
+```php
+$timestamp = rsaDecrypt($data['random'], $privateKey);
+$currentTimestamp = time() * 1000;
+$timeWindow = 3000;  // 3秒窗口！
+
+if (abs($currentTimestamp - $timestamp) > $timeWindow) {
+    echo json_encode(['success' => false, 'error' => 'No Repeater']);
+    exit;
+}
+
+$requestID = hash('sha256', $username . $password . $timestamp . $currentTimestamp);
+// 检查 requestID 是否已存在（防重放第二层）
+```
+
+**双重防护**：
+1. **时间窗口**：3 秒内的时间戳才有效。
+2. **requestID 唯一性**：同一个 requestID 只能用一次。
+
+### 12.3 Python 复现
+```python
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_v1_5
+import base64
+import json
+import time
+import requests
+
+# 1. 前端 JS 里的公钥
+public_key_pem = b"""-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDRvA7giwinEkaTYllDYCkzujvi
+NH+up0XAKXQot8RixKGpB7nr8AdidEvuo+wVCxZwDK3hlcRGrrqt0Gxqwc11btlM
+DSj92Mr3xSaJcshZU8kfj325L8DRh9jpruphHBfh955ihvbednGAvOHOrz3Qy3Cb
+ocDbsNeCwNpRxwjIdQIDAQAB
+-----END PUBLIC KEY-----"""
+
+# 2. 生成毫秒级时间戳（和前端 Date.now() 一致）
+timestamp_ms = int(time.time() * 1000)
+print(f"[*] 时间戳（毫秒）: {timestamp_ms}")
+
+# 3. RSA 加密时间戳
+pub = RSA.import_key(public_key_pem)
+cipher = PKCS1_v1_5.new(pub)
+encrypted = cipher.encrypt(str(timestamp_ms).encode())
+random_field = base64.b64encode(encrypted).decode()
+print(f"[*] random 字段: {random_field[:60]}...")
+
+# 4. 组装 JSON
+body = {
+    "username": "admin",
+    "password": "123456",
+    "random": random_field
+}
+
+# 5. 立刻发送（不能超过 3 秒！）
+url = "http://10.0.0.132:82/encrypt/norepeater.php"
+
+# 方式 A：不走 Burp 代理，直接发
+response = requests.post(url, json=body)
+print(f"\n[*] 响应: {response.text}")
+```
+
+### 12.4 关键认知
+- **3 秒窗口太短**，必须用脚本直接发请求，不能手动复制到 Burp。
+- RSA 在这里不是加密密码，而是**加密时间戳防篡改**。
+- 密码在请求里是**明文**——服务端用 `md5($password)` 比对，不需要解密。
+- 用 `requests.post(url, json=body)` 直接发送，可加 `proxies` 参数走 Burp 观察流量。
