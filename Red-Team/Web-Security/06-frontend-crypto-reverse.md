@@ -459,7 +459,7 @@ $requestID = hash('sha256', $username . $password . $timestamp . $currentTimesta
 1. **时间窗口**：3 秒内的时间戳才有效。
 2. **requestID 唯一性**：同一个 requestID 只能用一次。
 
-### 12.3 Python 复现
+### 11.3 Python 复现
 ```python
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
@@ -502,8 +502,73 @@ response = requests.post(url, json=body)
 print(f"\n[*] 响应: {response.text}")
 ```
 
-### 12.4 关键认知
+### 11.4 关键认知
 - **3 秒窗口太短**，必须用脚本直接发请求，不能手动复制到 Burp。
 - RSA 在这里不是加密密码，而是**加密时间戳防篡改**。
 - 密码在请求里是**明文**——服务端用 `md5($password)` 比对，不需要解密。
 - 用 `requests.post(url, json=body)` 直接发送，可加 `proxies` 参数走 Burp 观察流量。
+
+## 十二、AES 服务端获取 Key 关卡
+
+### 12.1 与前一个关卡的差异
+| 维度 | AES固定Key | AES服务端获取Key |
+| :--- | :--- | :--- |
+| Key/IV 位置 | 写死在前端 JS | 服务端动态下发 |
+| 逆向方式 | 搜代码找到 | 抓包分析两个请求 |
+| Python 复现 | 一条请求 | 两步流程 + Session 保持 |
+| Key/IV 变化 | 固定 | 每次请求都不同 |
+
+### 12.2 完整流程
+**两步请求**：
+1. `GET /encrypt/server_generate_key.php` → 返回 `{"aes_key": "...", "aes_iv": "..."}`
+2. `POST /encrypt/aesserver.php` → 发送 `{"encryptedData": "..."}`
+
+**服务端响应**：
+```json
+{
+    "aes_key": "6NWKZA8LG/pk1071c/z9xw==",
+    "aes_iv": "sfFYXckb/AoYNXbTTc+5gw=="
+}
+```
+两个都是 Base64 编码的 16 字节。
+
+### 12.3 Python 复现
+```python
+import requests
+import json
+import base64
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+
+session = requests.Session()
+base_url = "http://10.0.0.132:82"
+
+# 第一步：请求 Key/IV
+resp1 = session.get(f"{base_url}/encrypt/server_generate_key.php")
+data = resp1.json()
+aes_key = base64.b64decode(data["aes_key"])
+aes_iv  = base64.b64decode(data["aes_iv"])
+
+# 第二步：AES 加密
+plaintext = json.dumps({"username": "admin", "password": "123456"}, separators=(',', ':'))
+cipher = AES.new(aes_key, AES.MODE_CBC, aes_iv)
+encrypted = base64.b64encode(cipher.encrypt(pad(plaintext.encode(), 16))).decode()
+
+# 第三步：发送
+resp2 = session.post(
+    f"{base_url}/encrypt/aesserver.php",
+    json={"encryptedData": encrypted},
+    headers={"Content-Type": "application/json"}
+)
+print(resp2.text)
+```
+
+### 12.4 关键坑点
+1. **必须用 `requests.Session()`**：Cookie（PHPSESSID）要跨两个请求保持不变，否则服务端找不到对应的 Key/IV。
+2. **Key/IV 要 Base64 解码**：服务端下发的是 Base64 字符串，对应前端 JS 里的 `CryptoJS.enc.Base64.parse()`。
+3. **服务端每次都生成新 Key/IV**：即使同一账号连续请求，Key/IV 也不同。
+
+### 12.5 核心认知
+- 这个关卡模拟的是真实业务里的**"会话级密钥"** 机制——Key/IV 每次登录时动态生成，绑定到当前 Session。
+- 攻击者即使抓包看到了密文，也无法解密，因为没有 Key（Key 只在服务端内存里短暂存在）。
+- 但**仍然可以被绕过**：攻击者可以自己去要一份 Key/IV，然后用它加密任意数据发出去——这正是我们 Python 脚本做的事。
