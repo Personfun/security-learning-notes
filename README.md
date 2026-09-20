@@ -34,7 +34,7 @@
 - [CSRF与SSRF学习笔记](./Red-Team/Web-Security/03-csrf-ssrf.md)
 - [文件上传与命令注入学习笔记](./Red-Team/Web-Security/04-file-upload-and-command-injection.md)
 - [代码审计学习笔记](./Red-Team/Web-Security/05-code-audit.md)
-- [前端加解密对抗实战：从 AES 到 RSA 混合加密的完整逆向链](./Red-Team/Web-Security/06-frontend-crypto-reverse.md)
+- [前端加密、签名与防重放逆向实战](./Red-Team/Web-Security/06-frontend-crypto-signature-and-replay.md)
 
 ### 内网渗透与隧道
 记录内网穿透工具的使用、代理搭建以及横向移动技术。
@@ -95,7 +95,7 @@
 ## 五、学习路线
 
 - Web渗透测试与代码审计
-- **前端加解密对抗（AES / RSA / 混合加密 / HMAC 签名逆向）**
+- **前端加密、签名与防重放逆向（AES / RSA / 混合加密 / HMAC 签名 / 防重放）**
 - Linux / Windows 提权与权限维持
 - Docker容器逃逸与内网横向移动
 - 内网穿透与域渗透
