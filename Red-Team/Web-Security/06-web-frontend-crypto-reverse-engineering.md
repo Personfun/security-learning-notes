@@ -1,4 +1,4 @@
-# 06 - 前端加密、签名与防重放逆向实战
+# 06 - Web 前端加解密逆向与自动化实战
 
 ## 一、 背景说明
 
@@ -10,7 +10,7 @@
 
 这导致在渗透测试中，Burp 抓包看到的往往是密文或带签名的请求，使得后续的 SQL 注入、越权、密码爆破等测试难以开展。
 
-本笔记记录一次完整的"前端 JS 逆向 + Python 脚本复现"闭环实战，覆盖以下典型场景：
+本笔记记录一次完整的"前端 JS 逆向 + Python 脚本复现 + 自动化"闭环实战，覆盖以下典型场景：
 
 | 类别 | 场景 |
 | :--- | :--- |
@@ -19,6 +19,8 @@
 | **混合加密** | AES + RSA（工业级方案） |
 | **签名** | 明文加签（HMAC-SHA256）、加签 key 在服务端 |
 | **防重放** | RSA 加密时间戳 + 3 秒窗口 + requestID |
+| **逆向技术** | XHR/DOM/条件断点、Override/Proxy Hook |
+| **自动化** | autoDecoder 透明代理、mitmproxy 脚本 |
 
 - **测试环境**：CentOS 7 Docker 部署 `encrypt-labs`
 - **测试账号**：`admin` / `123456`
@@ -248,6 +250,20 @@ RSA 密文是 Base64，包含 `+`、`/`、`=`。直接放到 URL 参数里会被
 - **RSA 公钥是公开的**，逆向目标是"提取公钥并复现加密"，不是"破解"。
 - **RSA 每次加密结果都不同**（内含随机填充），不能用"密文对比"验证，正确方式是用私钥自解密，比对明文是否一致。
 - **RSA 加密长度有限**（≤ 密钥长度 - 11 字节），这就是为什么真实业务要用 AES+RSA 混合加密。
+
+### 6.5 真实场景的验证策略
+
+| 场景 | 验证方式 |
+| :--- | :--- |
+| **靶场（有源码）** | 用服务端源码里的私钥，本地自检解密 |
+| **真实渗透（有已知账号）** | 已知答案法：用有效账号加密发送，看服务端是否返回 success |
+| **真实渗透（无已知账号）** | 响应差异法：看服务端返回"解密失败"还是"密码错误" |
+
+**响应差异法的前提**：服务端对"解密失败"和"密码错误"返回**不同**的响应。
+
+**局限**：
+- 如果服务端统一了错误响应（都返回"请求参数错误"），响应差异法失效。
+- 只能确认加密逻辑对不对，不能确认密码对不对。
 
 ## 七、 AES+RSA 混合加密（工业级方案）
 
@@ -631,64 +647,190 @@ print(resp2.text)
 - **局限**：仍然需要请求服务端才能拿到签名，攻击者可以通过脚本模拟两步请求。
 - **真实业务里**，签名服务会附加更多前置条件：登录验证、短信验证码、限频、审计。
 
-## 十二、 总结与能力清单
+## 十二、 Chrome DevTools 断点与 Hook 技术
 
-经过以上所有关卡的实战，完整掌握了前端加密、签名与防重放对抗的核心能力：
+### 12.1 三种核心断点
 
-| 能力 | 状态 |
-| :--- | :--- |
-| 前端 JS 逆向（含混淆代码） | ✅ |
-| 识别 AES / DES / RSA / HMAC 算法特征 | ✅ |
-| 提取写死、动态生成、服务端下发的 Key/IV | ✅ |
-| Python 复现 AES / DES 对称加密 | ✅ |
-| Python 复现 RSA 非对称加密 | ✅ |
-| Python 复现 AES+RSA 混合加密 | ✅ |
-| Python 复现 HMAC-SHA256 签名 | ✅ |
-| Burp Intruder 自动化爆破 | ✅ |
-| 处理两步请求与 Session 保持 | ✅ |
-| URL 编码 / Base64 / Hex 三种格式处理 | ✅ |
-| 服务端源码审计对齐 | ✅ |
-| 本地自检验证思路 | ✅ |
-| 时间窗口与防重放机制处理 | ✅ |
+#### XHR/fetch 断点（最常用）
+**用途**：请求发出时自动断下，从调用栈回溯加密函数。
 
-**下一步进阶方向**：
+**操作**：
+1. F12 → Sources → 右侧 XHR/fetch Breakpoints → 点 `+`
+2. 输入 URL 关键词（如 `aes.php`）
+3. 触发请求，页面会停在发送前
 
-1. **autoDecoder 插件**：把 Python 脚本包装成 HTTP 服务，让 Burp 自动加解密。Burp 里看到的是明文，发出去的自动加密，实现"透明代理"效果。
-2. **mitmproxy 脚本**：跨工具复用加解密逻辑，支持 Burp + SQLMap + 自定义脚本协同。
-3. **实战拓展**：找真实网站进行完整的"抓包 → 定位 → 逆向 → 复现 → 自动化"闭环。
+**典型用途**：加密函数名被混淆，无法用全局搜索定位时。
 
-## 十三、 附录：环境准备
+#### DOM 事件断点
+**用途**：加密发生在点击/提交事件时。
 
-在 CentOS 7 或 Kali Linux 下，需安装依赖库：
+**操作**：
+1. Sources → Event Listener Breakpoints
+2. 展开 Mouse → 勾 `click`，或 Control → 勾 `submit`
+3. 点击按钮，断点触发
 
-```bash
-pip3 install pycryptodome requests
+#### 条件断点
+**用途**：函数被调用多次，只在特定条件下断。
+
+**操作**：
+1. 在源码中找到关键行
+2. 右键行号 → Add conditional breakpoint
+3. 输入条件（如 `_0x54dcc5 === 'admin'`）
+
+### 12.2 断点触发后的三个动作
+
+**1. 看 Call Stack（调用栈）**
+从下往上看调用链，找到加密函数所在层：
+```
+sendDataAes          ← 目标函数
+onclick              ← 事件处理
+dispatchEvent        ← 浏览器机制
 ```
 
-> 注：安装包名是 `pycryptodome`，但导入时用 `from Crypto.xxx import xxx`，是历史兼容原因。
+**2. 看 Scope（作用域变量）**
+右侧 Scope 面板显示当前函数所有变量，能看到：
+- `_0x807d91` = 明文 JSON
+- `_0x67b862` = AES Key（WordArray）
+- `_0x2d9cd5` = AES IV（WordArray）
+- `_0x1375d7` = 密文
 
-**常用命令备忘**：
-
-```bash
-# Base64 编解码
-echo -n "hello" | base64
-echo "aGVsbG8=" | base64 -d
-
-# Hex 转换
-echo -n "hello" | xxd -p
-echo "68656c6c6f" | xxd -r -p
-
-# URL 编码
-python3 -c "import urllib.parse; print(urllib.parse.quote('a+b/c='))"
+**3. 用 Console 执行表达式**
+在断点暂停时，Console 里可以直接求值：
+```javascript
+CryptoJS.enc.Utf8.stringify(_0x67b862)  // → "1234567890123456"
+CryptoJS.enc.Utf8.stringify(_0x2d9cd5)  // → "1234567890123456"
+_0x807d91  // → {"username":"admin","password":"123456"}
 ```
 
-## 十四、autoDecoder 透明代理配置
+### 12.3 Hook 技术
 
-### 14.1 目标
+**Hook = 给函数装监听器**，函数被调用时自动打印入参出参。
+
+#### 方式一：Override（最基础）
+```javascript
+var _originalEncrypt = CryptoJS.AES.encrypt;
+CryptoJS.AES.encrypt = function(data, key, options) {
+    console.log("=== AES 加密被调用 ===");
+    console.log("明文:", data.toString());
+    console.log("Key:", key.toString(CryptoJS.enc.Utf8));
+    if (options && options.iv) {
+        console.log("IV:", options.iv.toString(CryptoJS.enc.Utf8));
+    }
+    var result = _originalEncrypt.apply(this, arguments);
+    console.log("密文:", result.toString());
+    return result;
+};
+```
+
+**执行效果**（在 Console 里粘贴后点登录）：
+```
+=== AES 加密被调用 ===
+明文: {"username":"admin","password":"123456"}
+Key: 1234567890123456
+IV: 1234567890123456
+密文: nArXfVdnoe67UzojAPP2X+6qSiznLMBAI3a5Bi+zlNzXaUb9+gTXusl67b+DS9Zw
+```
+
+#### 方式二：Object.defineProperty（劫持属性）
+```javascript
+var _cookie = document.cookie;
+Object.defineProperty(document, 'cookie', {
+    get: function() {
+        console.log("读取 Cookie:", _cookie);
+        return _cookie;
+    },
+    set: function(val) {
+        console.log("设置 Cookie:", val);
+        _cookie = val;
+    }
+});
+```
+
+**用途**：追踪 `document.cookie` 的读写，定位 cookie 生成逻辑。
+
+#### 方式三：Proxy（拦截整个对象）
+```javascript
+var handler = {
+    get: function(obj, prop) {
+        console.log("读取属性:", prop);
+        return obj[prop];
+    },
+    apply: function(target, thisArg, args) {
+        console.log("函数调用入参:", args);
+        var result = target.apply(thisArg, args);
+        console.log("函数返回:", result);
+        return result;
+    }
+};
+window.targetFunction = new Proxy(window.targetFunction, handler);
+```
+
+**用途**：拦截对象属性读取和函数调用，不易被反调试检测。
+
+### 12.4 断点 vs Hook 对比
+
+| 维度 | 断点 | Hook |
+| :--- | :--- | :--- |
+| **操作** | F12 → Sources → 添加断点 | F12 → Console → 粘贴脚本 |
+| **触发** | 请求发出时自动断下 | 函数被调用时自动打印 |
+| **能拿到** | 调用链 + 所有中间变量 | 函数的入参出参 |
+| **是否暂停页面** | ✅ 要按 F8 释放 | ❌ 无感运行 |
+| **学习曲线** | 中 | 低 |
+| **适合场景** | 深入分析调用链、找混淆变量 | 快速定位密钥、批量监控 |
+
+**实战组合**：
+1. 先用 Hook 快速拿到密钥 → 1 分钟
+2. 再用断点深入分析调用链 → 5 分钟
+3. 最后用 Python 复现 + autoDecoder 自动化
+
+### 12.5 实战坑点：Hook 日志丢失问题
+
+**问题现象**：
+在 Console 里粘贴 Hook 代码后，点击登录，Hook 打印正常输出，但登录成功后页面跳转到 `success.html`，**Console 立即清空，Hook 输出全丢了**。
+
+**原因**：
+浏览器在页面跳转时会清空 Console 日志。
+
+**解决方案**：
+
+**方案 1：勾选 Preserve log（最推荐）**
+- F12 → Console → 右上角 ⚙️ → 勾选 **Preserve log**
+- 页面跳转后日志保留
+
+**方案 2：用 sessionStorage 持久化日志**
+```javascript
+CryptoJS.AES.encrypt = function(data, key, options) {
+    sessionStorage.setItem('hook_log', 
+        "明文: " + data.toString() + 
+        " | Key: " + key.toString(CryptoJS.enc.Utf8)
+    );
+    return _originalEncrypt.apply(this, arguments);
+};
+```
+跳转后在新页面的 Console 里 `sessionStorage.getItem('hook_log')` 读取。
+
+**方案 3：断点暂停页面**
+- 先加 XHR 断点在请求发送前
+- Hook 输出后，断点触发，页面暂停
+- 从容查看 Console 输出，分析完按 F8 释放
+
+**核心认知**：
+> **Hook 负责"抓"，断点负责"暂停"。**
+> **两者配合才能完整看到加密过程，尤其是页面会跳转的场景。**
+
+### 12.6 关键认知
+- **断点不是"暂停"，是"透明观察"**——你可以看到函数执行时的所有内部状态。
+- **Hook 不是"修改代码"，是"包装函数"**——原函数逻辑不变，只是多了日志。
+- **WordArray 要转成字符串**——CryptoJS 的 Key/IV 是 WordArray 对象，必须用 `CryptoJS.enc.Utf8.stringify()` 才看得懂。
+- **断点用 F8 释放**：忘了释放页面会一直卡住。
+
+## 十三、autoDecoder 透明代理配置
+
+### 13.1 目标
 让 Burp 里永远显示明文，发出去的自动加密，收到的自动解密。
 之后 Intruder 爆破、SQLMap 注入、越权测试，都可以像未加密网站一样操作。
 
-### 14.2 架构
+### 13.2 架构
 ```
 ┌─────────┐  明文   ┌──────────────┐  密文  ┌──────────┐
 │  Burp   │ ─────→ │ autoDecoder  │ ────→ │  服务器  │
@@ -697,7 +839,7 @@ python3 -c "import urllib.parse; print(urllib.parse.quote('a+b/c='))"
 └─────────┘  明文   └──────────────┘  密文  └──────────┘
 ```
 
-### 14.3 三步配置
+### 13.3 三步配置
 
 **第一步：写 Flask 加解密服务**
 
@@ -771,18 +913,18 @@ if __name__ == '__main__':
 | **接口加解密** | Encode URL: `http://127.0.0.1:8888/encode`，Decode URL: `http://127.0.0.1:8888/decode` |
 | 保存配置 | 会弹出文件对话框，选默认路径即可 |
 
-### 14.4 使用方式
+### 13.4 使用方式
 - **Repeater 的 `autoDecoder` 子标签**：显示明文（可编辑），在这里改请求。
 - **原始 `Pretty` / `Raw` 标签**：显示密文（只读），用来查看真实发送内容。
 - **发送后**：插件自动加密 → 服务端返回密文 → 插件自动解密 → Burp 显示明文。
 
-### 14.5 踩坑记录
+### 13.5 踩坑记录
 1. **Flask 参数名**：必须是 `dataBody`，不是 `data`。
 2. **Base64 里的 `+`**：必须 URL 编码，否则服务端解析时被当空格，导致 `Invalid input`。
 3. **原始编辑区被锁**：这是插件设计，改明文要去 `autoDecoder` 子标签。
 4. **域名匹配**：只填域名，不带端口（如 `10.0.0.132`）。
 
-### 14.6 实战验证：Intruder 明文字典爆破
+### 13.6 实战验证：Intruder 明文字典爆破
 
 **测试目标**：AES 固定 Key 关卡的登录密码。
 
@@ -814,9 +956,9 @@ if __name__ == '__main__':
 - **重放测试**：时间戳过期？插件自动生成新时间戳。
 - **自动化扫描**：Burp Scanner 能像扫描普通网站一样扫描加密目标。
 
-## 十五、mitmproxy：可编程代理工具
+## 十四、mitmproxy：可编程代理工具
 
-### 15.1 mitmproxy 是什么
+### 14.1 mitmproxy 是什么
 
 mitmproxy 是一个**独立的、可编程的中间人代理工具**，用 Python 编写。它和 Burp 一样工作在浏览器和服务器之间，抓取 HTTP/HTTPS 流量。
 
@@ -828,7 +970,7 @@ mitmproxy 是一个**独立的、可编程的中间人代理工具**，用 Pytho
 | `mitmweb` | 浏览器图形界面 | 类似 Burp Web UI，适合初学者 |
 | `mitmdump` | 无界面命令行 | 脚本自动化、批量处理 |
 
-### 15.2 和 Burp 的核心区别
+### 14.2 和 Burp 的核心区别
 
 | 维度 | Burp | mitmproxy |
 | :--- | :--- | :--- |
@@ -846,7 +988,7 @@ mitmproxy 是一个**独立的、可编程的中间人代理工具**，用 Pytho
 - **Burp + autoDecoder**：在 Burp Repeater 里显示"你手写的明文"，插件自动加密后发送
 - **mitmproxy**：脚本拦截真实流量，需要在脚本里判断是明文还是密文
 
-### 15.3 和 autoDecoder 的对比
+### 14.3 和 autoDecoder 的对比
 
 | 维度 | autoDecoder | mitmproxy |
 | :--- | :--- | :--- |
@@ -860,7 +1002,7 @@ mitmproxy 是一个**独立的、可编程的中间人代理工具**，用 Pytho
 - **autoDecoder**：让你在 Burp 里透明操作（改明文）
 - **mitmproxy**：让所有经过代理的工具（curl、SQLMap、ffuf 等）自动获得加解密能力
 
-### 15.4 mitmproxy 的真正价值
+### 14.4 mitmproxy 的真正价值
 
 **给不支持加密的第三方工具加透明加密。**
 
@@ -881,7 +1023,7 @@ curl -x http://127.0.0.1:8889 \
 ```
 curl 发的是**明文**，但经过 mitmproxy 后，靶场收到的是**密文**。
 
-### 15.5 快速上手
+### 14.5 快速上手
 
 **1. 启动 mitmweb**：
 ```bash
@@ -900,7 +1042,7 @@ mitmweb --listen-port 8889
 mitmweb --listen-port 8889 -s ~/aes_mitm.py
 ```
 
-### 15.6 mitmproxy 脚本示例
+### 14.6 mitmproxy 脚本示例
 
 **核心机制**：脚本定义几个回调函数，mitmproxy 在流量经过时自动调用。
 
@@ -953,7 +1095,7 @@ def response(flow: http.HTTPFlow):
 mitmweb --listen-port 8889 -s ~/aes_mitm.py
 ```
 
-### 15.7 踩坑记录：mitmproxy 不能替代 autoDecoder
+### 14.7 踩坑记录：mitmproxy 不能替代 autoDecoder
 
 **问题**：在浏览器里点登录时，mitmproxy 脚本收到的是**浏览器已经加密的密文**，不是明文。
 
@@ -966,7 +1108,7 @@ mitmweb --listen-port 8889 -s ~/aes_mitm.py
 - 想"让第三方工具自动加密" → 用 mitmproxy
 - 两者不冲突，可以互补
 
-### 15.8 实战场景总结
+### 14.8 实战场景总结
 
 | 场景 | 推荐工具 |
 | :--- | :--- |
@@ -978,180 +1120,68 @@ mitmweb --listen-port 8889 -s ~/aes_mitm.py
 | 习惯用 Burp 图形界面 | autoDecoder |
 | 无图形界面环境（SSH 远程） | mitmproxy |
 
-## 十六、Chrome DevTools 断点与 Hook 技术
+## 十五、 总结与能力清单
 
-### 16.1 三种核心断点
+经过以上所有关卡的实战，完整掌握了 Web 前端加解密逆向与自动化的核心能力：
 
-#### XHR/fetch 断点（最常用）
-**用途**：请求发出时自动断下，从调用栈回溯加密函数。
+| 能力 | 状态 |
+| :--- | :--- |
+| 前端 JS 逆向（含混淆代码） | ✅ |
+| XHR / DOM / 条件断点 | ✅ |
+| Override / defineProperty / Proxy 三种 Hook | ✅ |
+| 识别 AES / DES / RSA / HMAC 算法特征 | ✅ |
+| 提取写死、动态生成、服务端下发的 Key/IV | ✅ |
+| Python 复现 AES / DES 对称加密 | ✅ |
+| Python 复现 RSA 非对称加密 | ✅ |
+| Python 复现 AES+RSA 混合加密 | ✅ |
+| Python 复现 HMAC-SHA256 签名 | ✅ |
+| Burp Intruder 自动化爆破 | ✅ |
+| 处理两步请求与 Session 保持 | ✅ |
+| URL 编码 / Base64 / Hex 三种格式处理 | ✅ |
+| 服务端源码审计对齐 | ✅ |
+| 本地自检验证思路 | ✅ |
+| 时间窗口与防重放机制处理 | ✅ |
+| autoDecoder 透明代理配置 | ✅ |
+| mitmproxy 脚本编写 | ✅ |
 
-**操作**：
-1. F12 → Sources → 右侧 XHR/fetch Breakpoints → 点 `+`
-2. 输入 URL 关键词（如 `aes.php`）
-3. 触发请求，页面会停在发送前
+**核心方法论**：
 
-**典型用途**：加密函数名被混淆，无法用全局搜索定位时。
-
-#### DOM 事件断点
-**用途**：加密发生在点击/提交事件时。
-
-**操作**：
-1. Sources → Event Listener Breakpoints
-2. 展开 Mouse → 勾 `click`，或 Control → 勾 `submit`
-3. 点击按钮，断点触发
-
-#### 条件断点
-**用途**：函数被调用多次，只在特定条件下断。
-
-**操作**：
-1. 在源码中找到关键行
-2. 右键行号 → Add conditional breakpoint
-3. 输入条件（如 `_0x54dcc5 === 'admin'`）
-
-### 16.2 断点触发后的三个动作
-
-**1. 看 Call Stack（调用栈）**
-从下往上看调用链，找到加密函数所在层：
 ```
-sendDataAes          ← 目标函数
-onclick              ← 事件处理
-dispatchEvent        ← 浏览器机制
+前端 JS 逆向（断点 + Hook）→ 提取算法参数 → Python 复现 → 本地自检
+    ↓
+autoDecoder 透明代理（Burp 内部加解密）
+    ↓
+Intruder 爆破 / SQL 注入 / 越权测试 → 像未加密网站一样测试
 ```
 
-**2. 看 Scope（作用域变量）**
-右侧 Scope 面板显示当前函数所有变量，能看到：
-- `_0x807d91` = 明文 JSON
-- `_0x67b862` = AES Key（WordArray）
-- `_0x2d9cd5` = AES IV（WordArray）
-- `_0x1375d7` = 密文
+**下一步进阶方向**：
 
-**3. 用 Console 执行表达式**
-在断点暂停时，Console 里可以直接求值：
-```javascript
-CryptoJS.enc.Utf8.stringify(_0x67b862)  // → "1234567890123456"
-CryptoJS.enc.Utf8.stringify(_0x2d9cd5)  // → "1234567890123456"
-_0x807d91  // → {"username":"admin","password":"123456"}
+1. **真实网站实战**：找真实网站进行完整的"抓包 → 定位 → 逆向 → 复现 → 自动化"闭环。
+2. **签名逆向深化**：处理 HMAC、RSA 签名、多层签名等复杂场景。
+3. **反调试绕过**：处理 `debugger` 死循环、反 Hook 检测等反调试机制。
+4. **JSVMP 与 AST 还原**：处理虚拟机保护和 AST 代码混淆。
+
+## 十六、 附录：环境准备
+
+在 CentOS 7 或 Kali Linux 下，需安装依赖库：
+
+```bash
+pip3 install pycryptodome requests flask
 ```
 
-### 16.3 Hook 技术
+> 注：安装包名是 `pycryptodome`，但导入时用 `from Crypto.xxx import xxx`，是历史兼容原因。
 
-**Hook = 给函数装监听器**，函数被调用时自动打印入参出参。
+**常用命令备忘**：
 
-#### 方式一：Override（最基础）
-```javascript
-var _originalEncrypt = CryptoJS.AES.encrypt;
-CryptoJS.AES.encrypt = function(data, key, options) {
-    console.log("=== AES 加密被调用 ===");
-    console.log("明文:", data.toString());
-    console.log("Key:", key.toString(CryptoJS.enc.Utf8));
-    if (options && options.iv) {
-        console.log("IV:", options.iv.toString(CryptoJS.enc.Utf8));
-    }
-    var result = _originalEncrypt.apply(this, arguments);
-    console.log("密文:", result.toString());
-    return result;
-};
+```bash
+# Base64 编解码
+echo -n "hello" | base64
+echo "aGVsbG8=" | base64 -d
+
+# Hex 转换
+echo -n "hello" | xxd -p
+echo "68656c6c6f" | xxd -r -p
+
+# URL 编码
+python3 -c "import urllib.parse; print(urllib.parse.quote('a+b/c='))"
 ```
-
-**执行效果**（在 Console 里粘贴后点登录）：
-```
-=== AES 加密被调用 ===
-明文: {"username":"admin","password":"123456"}
-Key: 1234567890123456
-IV: 1234567890123456
-密文: nArXfVdnoe67UzojAPP2X+6qSiznLMBAI3a5Bi+zlNzXaUb9+gTXusl67b+DS9Zw
-```
-
-#### 方式二：Object.defineProperty（劫持属性）
-```javascript
-var _cookie = document.cookie;
-Object.defineProperty(document, 'cookie', {
-    get: function() {
-        console.log("读取 Cookie:", _cookie);
-        return _cookie;
-    },
-    set: function(val) {
-        console.log("设置 Cookie:", val);
-        _cookie = val;
-    }
-});
-```
-
-**用途**：追踪 `document.cookie` 的读写，定位 cookie 生成逻辑。
-
-#### 方式三：Proxy（拦截整个对象）
-```javascript
-var handler = {
-    get: function(obj, prop) {
-        console.log("读取属性:", prop);
-        return obj[prop];
-    },
-    apply: function(target, thisArg, args) {
-        console.log("函数调用入参:", args);
-        var result = target.apply(thisArg, args);
-        console.log("函数返回:", result);
-        return result;
-    }
-};
-window.targetFunction = new Proxy(window.targetFunction, handler);
-```
-
-**用途**：拦截对象属性读取和函数调用，不易被反调试检测。
-
-### 16.4 断点 vs Hook 对比
-
-| 维度 | 断点 | Hook |
-| :--- | :--- | :--- |
-| **操作** | F12 → Sources → 添加断点 | F12 → Console → 粘贴脚本 |
-| **触发** | 请求发出时自动断下 | 函数被调用时自动打印 |
-| **能拿到** | 调用链 + 所有中间变量 | 函数的入参出参 |
-| **是否暂停页面** | ✅ 要按 F8 释放 | ❌ 无感运行 |
-| **学习曲线** | 中 | 低 |
-| **适合场景** | 深入分析调用链、找混淆变量 | 快速定位密钥、批量监控 |
-
-**实战组合**：
-1. 先用 Hook 快速拿到密钥 → 1 分钟
-2. 再用断点深入分析调用链 → 5 分钟
-3. 最后用 Python 复现 + autoDecoder 自动化
-
-### 16.5 关键认知
-- **断点不是"暂停"，是"透明观察"**——你可以看到函数执行时的所有内部状态。
-- **Hook 不是"修改代码"，是"包装函数"**——原函数逻辑不变，只是多了日志。
-- **WordArray 要转成字符串**——CryptoJS 的 Key/IV 是 WordArray 对象，必须用 `CryptoJS.enc.Utf8.stringify()` 才看得懂。
-- **断点用 F8 释放**：忘了释放页面会一直卡住。
-**你这个观察非常实战，而且完全正确。**
-
-### 16.6 实战坑点：Hook 日志丢失问题
-
-**问题现象**：
-在 Console 里粘贴 Hook 代码后，点击登录，Hook 打印正常输出，但登录成功后页面跳转到 `success.html`，**Console 立即清空，Hook 输出全丢了**。
-
-**原因**：
-浏览器在页面跳转时会清空 Console 日志。Hook 的 `console.log` 输出还没来得及看就被清掉了。
-
-**解决方案**：
-
-**方案 1：勾选 Preserve log（最推荐）**
-- F12 → Console → 右上角 ⚙️ → 勾选 **Preserve log**
-- 页面跳转后日志保留
-
-**方案 2：用 sessionStorage 持久化日志**
-```javascript
-CryptoJS.AES.encrypt = function(data, key, options) {
-    sessionStorage.setItem('hook_log', 
-        "明文: " + data.toString() + 
-        " | Key: " + key.toString(CryptoJS.enc.Utf8)
-    );
-    return _originalEncrypt.apply(this, arguments);
-};
-```
-跳转后在新页面的 Console 里 `sessionStorage.getItem('hook_log')` 读取。
-
-**方案 3：断点暂停页面**
-- 先加 XHR 断点在请求发送前
-- Hook 输出后，断点触发，页面暂停
-- 从容查看 Console 输出，分析完按 F8 释放
-
-**核心认知**：
-> **Hook 负责"抓"，断点负责"暂停"。**
-> **两者配合才能完整看到加密过程，尤其是页面会跳转的场景。**
