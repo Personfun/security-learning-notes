@@ -977,3 +977,145 @@ mitmweb --listen-port 8889 -s ~/aes_mitm.py
 | 需要复杂流量处理逻辑 | mitmproxy |
 | 习惯用 Burp 图形界面 | autoDecoder |
 | 无图形界面环境（SSH 远程） | mitmproxy |
+
+## 十六、Chrome DevTools 断点与 Hook 技术
+
+### 16.1 三种核心断点
+
+#### XHR/fetch 断点（最常用）
+**用途**：请求发出时自动断下，从调用栈回溯加密函数。
+
+**操作**：
+1. F12 → Sources → 右侧 XHR/fetch Breakpoints → 点 `+`
+2. 输入 URL 关键词（如 `aes.php`）
+3. 触发请求，页面会停在发送前
+
+**典型用途**：加密函数名被混淆，无法用全局搜索定位时。
+
+#### DOM 事件断点
+**用途**：加密发生在点击/提交事件时。
+
+**操作**：
+1. Sources → Event Listener Breakpoints
+2. 展开 Mouse → 勾 `click`，或 Control → 勾 `submit`
+3. 点击按钮，断点触发
+
+#### 条件断点
+**用途**：函数被调用多次，只在特定条件下断。
+
+**操作**：
+1. 在源码中找到关键行
+2. 右键行号 → Add conditional breakpoint
+3. 输入条件（如 `_0x54dcc5 === 'admin'`）
+
+### 16.2 断点触发后的三个动作
+
+**1. 看 Call Stack（调用栈）**
+从下往上看调用链，找到加密函数所在层：
+```
+sendDataAes          ← 目标函数
+onclick              ← 事件处理
+dispatchEvent        ← 浏览器机制
+```
+
+**2. 看 Scope（作用域变量）**
+右侧 Scope 面板显示当前函数所有变量，能看到：
+- `_0x807d91` = 明文 JSON
+- `_0x67b862` = AES Key（WordArray）
+- `_0x2d9cd5` = AES IV（WordArray）
+- `_0x1375d7` = 密文
+
+**3. 用 Console 执行表达式**
+在断点暂停时，Console 里可以直接求值：
+```javascript
+CryptoJS.enc.Utf8.stringify(_0x67b862)  // → "1234567890123456"
+CryptoJS.enc.Utf8.stringify(_0x2d9cd5)  // → "1234567890123456"
+_0x807d91  // → {"username":"admin","password":"123456"}
+```
+
+### 16.3 Hook 技术
+
+**Hook = 给函数装监听器**，函数被调用时自动打印入参出参。
+
+#### 方式一：Override（最基础）
+```javascript
+var _originalEncrypt = CryptoJS.AES.encrypt;
+CryptoJS.AES.encrypt = function(data, key, options) {
+    console.log("=== AES 加密被调用 ===");
+    console.log("明文:", data.toString());
+    console.log("Key:", key.toString(CryptoJS.enc.Utf8));
+    if (options && options.iv) {
+        console.log("IV:", options.iv.toString(CryptoJS.enc.Utf8));
+    }
+    var result = _originalEncrypt.apply(this, arguments);
+    console.log("密文:", result.toString());
+    return result;
+};
+```
+
+**执行效果**（在 Console 里粘贴后点登录）：
+```
+=== AES 加密被调用 ===
+明文: {"username":"admin","password":"123456"}
+Key: 1234567890123456
+IV: 1234567890123456
+密文: nArXfVdnoe67UzojAPP2X+6qSiznLMBAI3a5Bi+zlNzXaUb9+gTXusl67b+DS9Zw
+```
+
+#### 方式二：Object.defineProperty（劫持属性）
+```javascript
+var _cookie = document.cookie;
+Object.defineProperty(document, 'cookie', {
+    get: function() {
+        console.log("读取 Cookie:", _cookie);
+        return _cookie;
+    },
+    set: function(val) {
+        console.log("设置 Cookie:", val);
+        _cookie = val;
+    }
+});
+```
+
+**用途**：追踪 `document.cookie` 的读写，定位 cookie 生成逻辑。
+
+#### 方式三：Proxy（拦截整个对象）
+```javascript
+var handler = {
+    get: function(obj, prop) {
+        console.log("读取属性:", prop);
+        return obj[prop];
+    },
+    apply: function(target, thisArg, args) {
+        console.log("函数调用入参:", args);
+        var result = target.apply(thisArg, args);
+        console.log("函数返回:", result);
+        return result;
+    }
+};
+window.targetFunction = new Proxy(window.targetFunction, handler);
+```
+
+**用途**：拦截对象属性读取和函数调用，不易被反调试检测。
+
+### 16.4 断点 vs Hook 对比
+
+| 维度 | 断点 | Hook |
+| :--- | :--- | :--- |
+| **操作** | F12 → Sources → 添加断点 | F12 → Console → 粘贴脚本 |
+| **触发** | 请求发出时自动断下 | 函数被调用时自动打印 |
+| **能拿到** | 调用链 + 所有中间变量 | 函数的入参出参 |
+| **是否暂停页面** | ✅ 要按 F8 释放 | ❌ 无感运行 |
+| **学习曲线** | 中 | 低 |
+| **适合场景** | 深入分析调用链、找混淆变量 | 快速定位密钥、批量监控 |
+
+**实战组合**：
+1. 先用 Hook 快速拿到密钥 → 1 分钟
+2. 再用断点深入分析调用链 → 5 分钟
+3. 最后用 Python 复现 + autoDecoder 自动化
+
+### 16.5 关键认知
+- **断点不是"暂停"，是"透明观察"**——你可以看到函数执行时的所有内部状态。
+- **Hook 不是"修改代码"，是"包装函数"**——原函数逻辑不变，只是多了日志。
+- **WordArray 要转成字符串**——CryptoJS 的 Key/IV 是 WordArray 对象，必须用 `CryptoJS.enc.Utf8.stringify()` 才看得懂。
+- **断点用 F8 释放**：忘了释放页面会一直卡住。
