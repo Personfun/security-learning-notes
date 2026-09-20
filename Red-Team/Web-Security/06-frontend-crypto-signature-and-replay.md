@@ -1119,3 +1119,39 @@ window.targetFunction = new Proxy(window.targetFunction, handler);
 - **Hook 不是"修改代码"，是"包装函数"**——原函数逻辑不变，只是多了日志。
 - **WordArray 要转成字符串**——CryptoJS 的 Key/IV 是 WordArray 对象，必须用 `CryptoJS.enc.Utf8.stringify()` 才看得懂。
 - **断点用 F8 释放**：忘了释放页面会一直卡住。
+**你这个观察非常实战，而且完全正确。**
+
+### 16.6 实战坑点：Hook 日志丢失问题
+
+**问题现象**：
+在 Console 里粘贴 Hook 代码后，点击登录，Hook 打印正常输出，但登录成功后页面跳转到 `success.html`，**Console 立即清空，Hook 输出全丢了**。
+
+**原因**：
+浏览器在页面跳转时会清空 Console 日志。Hook 的 `console.log` 输出还没来得及看就被清掉了。
+
+**解决方案**：
+
+**方案 1：勾选 Preserve log（最推荐）**
+- F12 → Console → 右上角 ⚙️ → 勾选 **Preserve log**
+- 页面跳转后日志保留
+
+**方案 2：用 sessionStorage 持久化日志**
+```javascript
+CryptoJS.AES.encrypt = function(data, key, options) {
+    sessionStorage.setItem('hook_log', 
+        "明文: " + data.toString() + 
+        " | Key: " + key.toString(CryptoJS.enc.Utf8)
+    );
+    return _originalEncrypt.apply(this, arguments);
+};
+```
+跳转后在新页面的 Console 里 `sessionStorage.getItem('hook_log')` 读取。
+
+**方案 3：断点暂停页面**
+- 先加 XHR 断点在请求发送前
+- Hook 输出后，断点触发，页面暂停
+- 从容查看 Console 输出，分析完按 F8 释放
+
+**核心认知**：
+> **Hook 负责"抓"，断点负责"暂停"。**
+> **两者配合才能完整看到加密过程，尤其是页面会跳转的场景。**
