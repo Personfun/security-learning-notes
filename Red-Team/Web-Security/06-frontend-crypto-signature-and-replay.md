@@ -681,3 +681,103 @@ echo "68656c6c6f" | xxd -r -p
 # URL 编码
 python3 -c "import urllib.parse; print(urllib.parse.quote('a+b/c='))"
 ```
+
+## 十四、autoDecoder 透明代理配置
+
+### 14.1 目标
+让 Burp 里永远显示明文，发出去的自动加密，收到的自动解密。
+之后 Intruder 爆破、SQLMap 注入、越权测试，都可以像未加密网站一样操作。
+
+### 14.2 架构
+```
+┌─────────┐  明文   ┌──────────────┐  密文  ┌──────────┐
+│  Burp   │ ─────→ │ autoDecoder  │ ────→ │  服务器  │
+│  Repeater│        │  + Flask 服务│        │          │
+│         │ ←───── │              │ ←──── │          │
+└─────────┘  明文   └──────────────┘  密文  └──────────┘
+```
+
+### 14.3 三步配置
+
+**第一步：写 Flask 加解密服务**
+
+```python
+from flask import Flask, request
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad, unpad
+import base64
+import urllib.parse
+
+app = Flask(__name__)
+
+KEY = b'1234567890123456'
+IV  = b'1234567890123456'
+PREFIX = 'encryptedData='
+
+def aes_encrypt(plaintext):
+    cipher = AES.new(KEY, AES.MODE_CBC, IV)
+    padded = pad(plaintext.encode('utf-8'), 16)
+    b64 = base64.b64encode(cipher.encrypt(padded)).decode('utf-8')
+    return urllib.parse.quote(b64, safe='')  # 关键：URL 编码
+
+def aes_decrypt(ciphertext_urlencoded):
+    ciphertext = urllib.parse.unquote(ciphertext_urlencoded)
+    cipher = AES.new(KEY, AES.MODE_CBC, IV)
+    decrypted = unpad(cipher.decrypt(base64.b64decode(ciphertext)), 16)
+    return decrypted.decode('utf-8')
+
+@app.route('/encode', methods=['POST'])
+def encode():
+    body = request.form.get('dataBody', '').strip('\n')
+    if body.startswith(PREFIX):
+        value = body[len(PREFIX):]
+        result = PREFIX + aes_encrypt(value)
+    else:
+        result = aes_encrypt(body)
+    return result
+
+@app.route('/decode', methods=['POST'])
+def decode():
+    body = request.form.get('dataBody', '').strip('\n')
+    if body.startswith(PREFIX):
+        value = body[len(PREFIX):]
+        try:
+            result = PREFIX + aes_decrypt(value)
+        except Exception:
+            result = body
+    else:
+        result = body
+    return result
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=8888, threaded=True)
+```
+
+**关键点**：
+- 参数名必须是 **`dataBody`**（不是 `data`），插件按这个发数据。
+- 加密后返回时要做 **URL 编码**（`urllib.parse.quote`），否则 Base64 里的 `+` 会被服务端当成空格。
+
+**第二步：下载并加载 autoDecoder 插件**
+
+- 下载地址：`https://github.com/f0ng/autoDecoder/releases`
+- 选 `jdk14` 版本（对应 Burp 2024+）
+- Burp → Extensions → Add → 选 jar → 加载成功
+
+**第三步：配置 autoDecoder**
+
+| 标签页 | 配置 |
+| :--- | :--- |
+| **Options** | 勾选 `接口加解密`，域名填靶场地址（如 `10.0.0.132`） |
+| **接口加解密** | Encode URL: `http://127.0.0.1:8888/encode`，Decode URL: `http://127.0.0.1:8888/decode` |
+| 保存配置 | 会弹出文件对话框，选默认路径即可 |
+
+### 14.4 使用方式
+- **Repeater 的 `autoDecoder` 子标签**：显示明文（可编辑），在这里改请求。
+- **原始 `Pretty` / `Raw` 标签**：显示密文（只读），用来查看真实发送内容。
+- **发送后**：插件自动加密 → 服务端返回密文 → 插件自动解密 → Burp 显示明文。
+
+### 14.5 踩坑记录
+1. **Flask 参数名**：必须是 `dataBody`，不是 `data`。
+2. **Base64 里的 `+`**：必须 URL 编码，否则服务端解析时被当空格，导致 `Invalid input`。
+3. **原始编辑区被锁**：这是插件设计，改明文要去 `autoDecoder` 子标签。
+4. **域名匹配**：只填域名，不带端口（如 `10.0.0.132`）。
