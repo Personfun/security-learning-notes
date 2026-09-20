@@ -1,10 +1,24 @@
-# 06 - 前端加解密对抗实战：从 AES 到 RSA 混合加密的完整逆向链
+# 06 - 前端加密、签名与防重放逆向实战
 
 ## 一、 背景说明
 
-在现代 Web 业务系统中，出于安全考虑，前端通常会引入加解密技术来保护传输数据（如登录密码）。这导致在渗透测试中，Burp 抓包看到的往往是密文，使得后续的 SQL 注入、越权、密码爆破等测试难以开展。
+在现代 Web 业务系统中，出于安全考虑，前端通常会引入多层防护来保护请求数据：
 
-本笔记记录一次完整的"前端 JS 逆向 + Python 脚本复现"闭环实战，覆盖**对称加密（AES/DES）、非对称加密（RSA）、混合加密（AES+RSA）** 四大典型场景。
+- **加密**（AES/RSA）保护数据的机密性
+- **签名**（HMAC）保护数据的完整性
+- **防重放**（时间戳 + nonce）保护请求的时效性和唯一性
+
+这导致在渗透测试中，Burp 抓包看到的往往是密文或带签名的请求，使得后续的 SQL 注入、越权、密码爆破等测试难以开展。
+
+本笔记记录一次完整的"前端 JS 逆向 + Python 脚本复现"闭环实战，覆盖以下典型场景：
+
+| 类别 | 场景 |
+| :--- | :--- |
+| **对称加密** | AES 固定 Key、AES 服务端下发 Key、DES 动态 Key |
+| **非对称加密** | 纯 RSA |
+| **混合加密** | AES + RSA（工业级方案） |
+| **签名** | 明文加签（HMAC-SHA256）、加签 key 在服务端 |
+| **防重放** | RSA 加密时间戳 + 3 秒窗口 + requestID |
 
 - **测试环境**：CentOS 7 Docker 部署 `encrypt-labs`
 - **测试账号**：`admin` / `123456`
@@ -12,19 +26,22 @@
 
 ## 二、 通用方法论
 
-面对任何前端加密的目标，遵循以下四步：
+面对任何前端加密或签名的目标，遵循以下五步：
 
 ```
-1. 抓包      → 看到密文请求
-2. 定位      → F12 Sources 面板找加密函数（全局搜索 encrypt / CryptoJS / setPublicKey）
-3. 逆向      → 分析算法、Key/IV、Mode、Padding、输出格式
+1. 抓包      → 看到密文或签名请求
+2. 定位      → F12 Sources 面板找关键函数（全局搜索 encrypt / CryptoJS / setPublicKey / Hmac）
+3. 逆向      → 分析算法、Key/IV、Mode、Padding、拼接规则、盐
 4. 复现      → 用 Python 100% 复现前端逻辑，本地自检通过后再发出去
+5. 验证      → 用 Burp Repeater 或 requests 直接发送，观察服务端响应
 ```
 
 **关键原则**：
+
 - **不要死磕密文**——密文本身没有信息，价值在于找到它的生成函数。
 - **本地自检胜过盲目爆破**——先证明"我加密的，自己能解开"，再发出去验证。
 - **代码混淆不是障碍**——变量名变成 `_0x...` 不影响逻辑，看调用栈和参数就能还原。
+- **控制变量法是逆向利器**——改一个参数，看输出变化，反推拼接规则。
 
 ## 三、 对称加密通用模型
 
@@ -38,6 +55,7 @@
 ```
 
 **四个关键参数**：
+
 | 参数 | 说明 | 常见值 |
 | :--- | :--- | :--- |
 | 算法 | 决定用哪个加密器 | AES、DES、3DES、SM4 |
@@ -46,6 +64,7 @@
 | Padding | 填充方式 | Pkcs7、Pkcs5、ZeroPadding |
 
 **两个易混淆概念**：
+
 - **块大小（Block Size）**：决定填充基准。DES 固定 8 字节，AES 固定 16 字节。
 - **密钥长度（Key Size）**：决定强度。DES 固定 8 字节，AES 可以是 16/24/32 字节。
 - **IV 长度总是等于块大小**。
@@ -87,27 +106,24 @@ from Crypto.Util.Padding import pad
 import base64
 import json
 
-# 1. 明文（和前端一样，用 JSON 格式，separators 保证无空格）
 username = "admin"
 password = "123456"
 plaintext = json.dumps({"username": username, "password": password}, separators=(',', ':'))
 print(f"[*] 明文 JSON: {plaintext}")
 
-# 2. Key 和 IV（写死的）
 key = b'1234567890123456'
 iv = b'1234567890123456'
 
-# 3. AES-CBC-Pkcs7 加密
 cipher = AES.new(key, AES.MODE_CBC, iv)
 padded = pad(plaintext.encode('utf-8'), AES.block_size)
 encrypted_bytes = cipher.encrypt(padded)
 
-# 4. 转 Base64（前端 toString() 默认就是这个）
 base64_result = base64.b64encode(encrypted_bytes).decode('utf-8')
 print(f"[*] AES 密文 (Base64): {base64_result}")
 ```
 
 **验证结果**：
+
 - Python 生成：`nArXfVdnoe67UzojAPP2X+6qSiznLMBAI3a5Bi+zlNzXaUb9+gTXusl67b+DS9Zw`
 - Burp 抓包（URL 解码后）：完全一致
 
@@ -145,13 +161,11 @@ from Crypto.Util.Padding import pad
 username = "admin"
 password = "123456"
 
-# 动态生成 Key 和 IV
 key_str = username[:8].ljust(8, '6')
 key = key_str.encode('utf-8')
 iv_str = '9999' + username[:4].ljust(4, '9')
 iv = iv_str.encode('utf-8')
 
-# DES 加密
 cipher = DES.new(key, DES.MODE_CBC, iv)
 padded_password = pad(password.encode('utf-8'), DES.block_size)
 encrypted_bytes = cipher.encrypt(padded_password)
@@ -162,6 +176,7 @@ print(f"[*] 前端密文 (Hex): {encrypted_bytes.hex()}")
 ```
 
 **验证结果**：
+
 - Python 生成：`3981f487c5afde43`
 - Burp 抓包：`3981f487c5afde43`
 - **完全一致，逆向成功**。
@@ -206,14 +221,12 @@ ocDbsNeCwNpRxwjIdQIDAQAB
 plaintext = json.dumps({"username": "admin", "password": "123456"}, separators=(',', ':'))
 print(f"[*] 明文 JSON: {plaintext}")
 
-# RSA 加密
 pub = RSA.import_key(public_key_pem)
 cipher_enc = PKCS1_v1_5.new(pub)
 encrypted = cipher_enc.encrypt(plaintext.encode('utf-8'))
 b64_cipher = base64.b64encode(encrypted).decode('utf-8')
 print(f"[*] RSA 密文: {b64_cipher}")
 
-# URL 编码（用于 Burp）
 url_encoded = urllib.parse.quote(b64_cipher, safe='')
 print(f"[*] 用于 Burp 的 URL 编码密文:\n{url_encoded}")
 ```
@@ -241,6 +254,7 @@ RSA 密文是 Base64，包含 `+`、`/`、`=`。直接放到 URL 参数里会被
 ### 7.1 业务场景
 
 真实业务（如 App 登录、运营商网厅）的工业级方案：
+
 - **AES 加密数据主体**（快）
 - **RSA 加密 AES 的 Key/IV**（安全传输密钥）
 - **每次登录随机生成 Key/IV**（防重放、防分析）
@@ -286,8 +300,6 @@ DSj92Mr3xSaJcshZU8kfj325L8DRh9jpruphHBfh955ihvbednGAvOHOrz3Qy3Cb
 ocDbsNeCwNpRxwjIdQIDAQAB
 -----END PUBLIC KEY-----"""
 
-# ===== 加密流程 =====
-
 # 1. 随机生成 16 字节 AES Key 和 IV
 aes_key = os.urandom(16)
 aes_iv  = os.urandom(16)
@@ -317,6 +329,7 @@ print(json.dumps(body, indent=2))
 ```
 
 **验证结果**：
+
 - 用服务端私钥本地自检：`Key 是否一致: True`、`IV 是否一致: True`、`是否与原始明文一致: True`
 - Burp Repeater 发送 JSON，返回 `{"success":true}`
 
@@ -332,185 +345,10 @@ print(json.dumps(body, indent=2))
 - **AES Key 每次随机**——即使同一个密码，每次请求密文都不同。
 - **前后端对齐检查**：先本地自检通过，再发出去，这样即使失败也能快速定位是前端逻辑错还是服务端拒收。
 
-## 八、 总结与能力清单
+## 八、 AES 服务端获取 Key 关卡
 
-经过这四个关卡的实战，完整掌握了前端加解密对抗的核心能力：
+### 8.1 与 AES 固定 Key 的差异
 
-| 能力 | 状态 |
-| :--- | :--- |
-| 前端 JS 逆向（含混淆代码） | ✅ |
-| 识别 AES / DES / RSA 算法特征 | ✅ |
-| 提取写死或动态生成的 Key/IV | ✅ |
-| Python 复现 AES 对称加密 | ✅ |
-| Python 复现 RSA 非对称加密 | ✅ |
-| Python 复现 AES+RSA 混合加密 | ✅ |
-| Burp Intruder 自动化爆破 | ✅ |
-| URL 编码 / Base64 / Hex 三种格式处理 | ✅ |
-| 服务端源码审计对齐 | ✅ |
-| 本地自检验证思路 | ✅ |
-
-**下一步进阶方向**：
-
-1. **autoDecoder 插件**：把 Python 脚本包装成 HTTP 服务，让 Burp 自动加解密。Burp 里看到的是明文，发出去的自动加密，实现"透明代理"效果。
-2. **签名（Sign）逆向**：处理 `sign = MD5(参数排序 + 盐 + timestamp)` 类防护。
-3. **防重放（Nonce + Timestamp）**：理解时间窗口、一次性令牌等机制。
-
-## 九、 附：脚本环境准备
-
-在 CentOS 7 或 Kali Linux 下，需安装依赖库：
-
-```bash
-pip3 install pycryptodome
-```
-
-> 注：安装包名是 `pycryptodome`，但导入时用 `from Crypto.xxx import xxx`，是历史兼容原因。
-
-## 十、HMAC-SHA256 签名 + 防重放关卡
-
-### 10.1 前端加密逻辑
-定位 `sendDataWithNonce` 函数：
-- **哈希函数**：HMAC-SHA256
-- **盐（Secret）**：`be56e057f20f883e`
-- **拼接规则**：`username + password + nonce + timestamp`（无分隔符）
-- **nonce 生成**：`Math.random().toString(36).substring(2)`
-- **timestamp**：`Math.floor(Date.now() / 1000)`（秒级）
-- **输出**：Hex
-
-### 10.2 Python 复现
-```python
-import hmac
-import hashlib
-import json
-import time
-import random
-import string
-
-# 生成 nonce（12 位小写字母+数字）
-def gen_nonce():
-    chars = string.ascii_lowercase + string.digits
-    return ''.join(random.choice(chars) for _ in range(12))
-
-# 输入
-username = "admin"
-password = "123456"
-nonce = gen_nonce()             # ← 每次随机
-timestamp = int(time.time())    # ← 每次当前时间
-secret = "be56e057f20f883e"
-
-# 拼接
-message = username + password + nonce + str(timestamp)
-print(f"[*] nonce:     {nonce}")
-print(f"[*] timestamp: {timestamp}")
-print(f"[*] 待签名原文: {message}")
-
-# HMAC-SHA256
-signature = hmac.new(
-    secret.encode('utf-8'),
-    message.encode('utf-8'),
-    hashlib.sha256
-).hexdigest()
-print(f"[*] signature: {signature}")
-
-# 组装 JSON
-body = {
-    "username": username,
-    "password": password,
-    "nonce": nonce,
-    "timestamp": timestamp,
-    "signature": signature
-}
-print("\n[*] 请求体 JSON:")
-print(json.dumps(body, indent=2))
-```
-
-### 10.3 验证结果
-- Python 生成新请求 → Burp 发送 → 服务端返回 `{"success":true}`
-
-### 10.4 关键认知
-- HMAC-SHA256 比纯 MD5/SHA256 更安全，盐作为算法参数传入。
-- 拼接规则没有分隔符时要注意顺序，控制变量法可以推导。
-- 时间戳和 nonce 是防重放的核心机制。
-
-## 十一、禁止重放关卡实战
-
-### 11.1 前端加密逻辑
-定位 `sendLoginRequest` + `generateRequestData` 函数：
-- **加密对象**：毫秒级时间戳 `Date.now()`
-- **加密方式**：RSA 公钥加密
-- **发送字段**：`username` + `password` + `random`（加密后的时间戳）
-- **请求格式**：JSON
-
-### 11.2 服务端防重放机制（从源码读出）
-```php
-$timestamp = rsaDecrypt($data['random'], $privateKey);
-$currentTimestamp = time() * 1000;
-$timeWindow = 3000;  // 3秒窗口！
-
-if (abs($currentTimestamp - $timestamp) > $timeWindow) {
-    echo json_encode(['success' => false, 'error' => 'No Repeater']);
-    exit;
-}
-
-$requestID = hash('sha256', $username . $password . $timestamp . $currentTimestamp);
-// 检查 requestID 是否已存在（防重放第二层）
-```
-
-**双重防护**：
-1. **时间窗口**：3 秒内的时间戳才有效。
-2. **requestID 唯一性**：同一个 requestID 只能用一次。
-
-### 11.3 Python 复现
-```python
-from Crypto.PublicKey import RSA
-from Crypto.Cipher import PKCS1_v1_5
-import base64
-import json
-import time
-import requests
-
-# 1. 前端 JS 里的公钥
-public_key_pem = b"""-----BEGIN PUBLIC KEY-----
-MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDRvA7giwinEkaTYllDYCkzujvi
-NH+up0XAKXQot8RixKGpB7nr8AdidEvuo+wVCxZwDK3hlcRGrrqt0Gxqwc11btlM
-DSj92Mr3xSaJcshZU8kfj325L8DRh9jpruphHBfh955ihvbednGAvOHOrz3Qy3Cb
-ocDbsNeCwNpRxwjIdQIDAQAB
------END PUBLIC KEY-----"""
-
-# 2. 生成毫秒级时间戳（和前端 Date.now() 一致）
-timestamp_ms = int(time.time() * 1000)
-print(f"[*] 时间戳（毫秒）: {timestamp_ms}")
-
-# 3. RSA 加密时间戳
-pub = RSA.import_key(public_key_pem)
-cipher = PKCS1_v1_5.new(pub)
-encrypted = cipher.encrypt(str(timestamp_ms).encode())
-random_field = base64.b64encode(encrypted).decode()
-print(f"[*] random 字段: {random_field[:60]}...")
-
-# 4. 组装 JSON
-body = {
-    "username": "admin",
-    "password": "123456",
-    "random": random_field
-}
-
-# 5. 立刻发送（不能超过 3 秒！）
-url = "http://10.0.0.132:82/encrypt/norepeater.php"
-
-# 方式 A：不走 Burp 代理，直接发
-response = requests.post(url, json=body)
-print(f"\n[*] 响应: {response.text}")
-```
-
-### 11.4 关键认知
-- **3 秒窗口太短**，必须用脚本直接发请求，不能手动复制到 Burp。
-- RSA 在这里不是加密密码，而是**加密时间戳防篡改**。
-- 密码在请求里是**明文**——服务端用 `md5($password)` 比对，不需要解密。
-- 用 `requests.post(url, json=body)` 直接发送，可加 `proxies` 参数走 Burp 观察流量。
-
-## 十二、AES 服务端获取 Key 关卡
-
-### 12.1 与前一个关卡的差异
 | 维度 | AES固定Key | AES服务端获取Key |
 | :--- | :--- | :--- |
 | Key/IV 位置 | 写死在前端 JS | 服务端动态下发 |
@@ -518,21 +356,26 @@ print(f"\n[*] 响应: {response.text}")
 | Python 复现 | 一条请求 | 两步流程 + Session 保持 |
 | Key/IV 变化 | 固定 | 每次请求都不同 |
 
-### 12.2 完整流程
+### 8.2 完整流程
+
 **两步请求**：
+
 1. `GET /encrypt/server_generate_key.php` → 返回 `{"aes_key": "...", "aes_iv": "..."}`
 2. `POST /encrypt/aesserver.php` → 发送 `{"encryptedData": "..."}`
 
 **服务端响应**：
+
 ```json
 {
     "aes_key": "6NWKZA8LG/pk1071c/z9xw==",
     "aes_iv": "sfFYXckb/AoYNXbTTc+5gw=="
 }
 ```
+
 两个都是 Base64 编码的 16 字节。
 
-### 12.3 Python 复现
+### 8.3 Python 复现
+
 ```python
 import requests
 import json
@@ -563,12 +406,278 @@ resp2 = session.post(
 print(resp2.text)
 ```
 
-### 12.4 关键坑点
+### 8.4 关键坑点
+
 1. **必须用 `requests.Session()`**：Cookie（PHPSESSID）要跨两个请求保持不变，否则服务端找不到对应的 Key/IV。
 2. **Key/IV 要 Base64 解码**：服务端下发的是 Base64 字符串，对应前端 JS 里的 `CryptoJS.enc.Base64.parse()`。
 3. **服务端每次都生成新 Key/IV**：即使同一账号连续请求，Key/IV 也不同。
 
-### 12.5 核心认知
-- 这个关卡模拟的是真实业务里的**"会话级密钥"** 机制——Key/IV 每次登录时动态生成，绑定到当前 Session。
+### 8.5 核心认知
+
+- 这个关卡模拟的是真实业务里的**"会话级密钥"**机制——Key/IV 每次登录时动态生成，绑定到当前 Session。
 - 攻击者即使抓包看到了密文，也无法解密，因为没有 Key（Key 只在服务端内存里短暂存在）。
 - 但**仍然可以被绕过**：攻击者可以自己去要一份 Key/IV，然后用它加密任意数据发出去——这正是我们 Python 脚本做的事。
+
+## 九、 HMAC-SHA256 签名 + 防重放（明文加签）
+
+### 9.1 前端加密逻辑
+
+定位 `sendDataWithNonce` 函数：
+
+- **哈希函数**：HMAC-SHA256
+- **盐（Secret）**：`be56e057f20f883e`
+- **拼接规则**：`username + password + nonce + timestamp`（无分隔符）
+- **nonce 生成**：`Math.random().toString(36).substring(2)`
+- **timestamp**：`Math.floor(Date.now() / 1000)`（秒级）
+- **输出**：Hex
+
+### 9.2 Python 复现
+
+```python
+import hmac
+import hashlib
+import json
+import time
+import random
+import string
+
+def gen_nonce():
+    chars = string.ascii_lowercase + string.digits
+    return ''.join(random.choice(chars) for _ in range(12))
+
+username = "admin"
+password = "123456"
+nonce = gen_nonce()
+timestamp = int(time.time())
+secret = "be56e057f20f883e"
+
+message = username + password + nonce + str(timestamp)
+print(f"[*] nonce:     {nonce}")
+print(f"[*] timestamp: {timestamp}")
+print(f"[*] 待签名原文: {message}")
+
+signature = hmac.new(
+    secret.encode('utf-8'),
+    message.encode('utf-8'),
+    hashlib.sha256
+).hexdigest()
+print(f"[*] signature: {signature}")
+
+body = {
+    "username": username,
+    "password": password,
+    "nonce": nonce,
+    "timestamp": timestamp,
+    "signature": signature
+}
+print("\n[*] 请求体 JSON:")
+print(json.dumps(body, indent=2))
+```
+
+### 9.3 验证结果
+
+- Python 生成新请求 → Burp 发送 → 服务端返回 `{"success":true}`
+
+### 9.4 关键认知
+
+- HMAC-SHA256 比纯 MD5/SHA256 更安全，盐作为算法参数传入。
+- 拼接规则没有分隔符时要注意顺序，控制变量法可以推导。
+- 时间戳和 nonce 是防重放的核心机制。
+
+## 十、 禁止重放关卡实战
+
+### 10.1 前端加密逻辑
+
+定位 `sendLoginRequest` + `generateRequestData` 函数：
+
+- **加密对象**：毫秒级时间戳 `Date.now()`
+- **加密方式**：RSA 公钥加密
+- **发送字段**：`username` + `password` + `random`（加密后的时间戳）
+- **请求格式**：JSON
+
+### 10.2 服务端防重放机制（从源码读出）
+
+```php
+$timestamp = rsaDecrypt($data['random'], $privateKey);
+$currentTimestamp = time() * 1000;
+$timeWindow = 3000;  // 3秒窗口！
+
+if (abs($currentTimestamp - $timestamp) > $timeWindow) {
+    echo json_encode(['success' => false, 'error' => 'No Repeater']);
+    exit;
+}
+
+$requestID = hash('sha256', $username . $password . $timestamp . $currentTimestamp);
+// 检查 requestID 是否已存在（防重放第二层）
+```
+
+**双重防护**：
+
+1. **时间窗口**：3 秒内的时间戳才有效。
+2. **requestID 唯一性**：同一个 requestID 只能用一次。
+
+### 10.3 Python 复现
+
+```python
+from Crypto.PublicKey import RSA
+from Crypto.Cipher import PKCS1_v1_5
+import base64
+import json
+import time
+import requests
+
+public_key_pem = b"""-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDRvA7giwinEkaTYllDYCkzujvi
+NH+up0XAKXQot8RixKGpB7nr8AdidEvuo+wVCxZwDK3hlcRGrrqt0Gxqwc11btlM
+DSj92Mr3xSaJcshZU8kfj325L8DRh9jpruphHBfh955ihvbednGAvOHOrz3Qy3Cb
+ocDbsNeCwNpRxwjIdQIDAQAB
+-----END PUBLIC KEY-----"""
+
+timestamp_ms = int(time.time() * 1000)
+print(f"[*] 时间戳（毫秒）: {timestamp_ms}")
+
+pub = RSA.import_key(public_key_pem)
+cipher = PKCS1_v1_5.new(pub)
+encrypted = cipher.encrypt(str(timestamp_ms).encode())
+random_field = base64.b64encode(encrypted).decode()
+print(f"[*] random 字段: {random_field[:60]}...")
+
+body = {
+    "username": "admin",
+    "password": "123456",
+    "random": random_field
+}
+
+url = "http://10.0.0.132:82/encrypt/norepeater.php"
+response = requests.post(url, json=body)
+print(f"\n[*] 响应: {response.text}")
+```
+
+### 10.4 关键认知
+
+- **3 秒窗口太短**，必须用脚本直接发请求，不能手动复制到 Burp。
+- RSA 在这里不是加密密码，而是**加密时间戳防篡改**。
+- 密码在请求里是**明文**——服务端用 `md5($password)` 比对，不需要解密。
+- 用 `requests.post(url, json=body)` 直接发送，可加 `proxies` 参数走 Burp 观察流量。
+
+## 十一、 加签 key 在服务端关卡
+
+### 11.1 与"明文加签"的差异
+
+| 维度 | 明文加签 | 加签key在服务端 |
+| :--- | :--- | :--- |
+| 盐的位置 | 写死在前端 JS（`be56e057f20f883e`） | **服务端持有，前端拿不到** |
+| 签名生成方 | 前端自己算 | **先去服务端要** |
+| 逆向方式 | 直接读代码 | 抓包分析两步请求 |
+| 关键约束 | 无 | **timestamp 两步必须一致** |
+
+### 11.2 完整流程
+
+**两步请求**：
+
+1. `POST /encrypt/get-signature.php` → 发 `{username, password, timestamp}` → 返回 `{signature}`
+2. `POST /encrypt/signdataserver.php` → 发 `{username, password, timestamp, signature}`
+
+**服务端响应**：
+
+```json
+{
+    "signature": "93bf23c414cf65195e8aa67f1fde1072e86038f5ad76cd88ce77fa70976bd569"
+}
+```
+
+### 11.3 Python 复现
+
+```python
+import requests
+import json
+import time
+
+session = requests.Session()
+base_url = "http://10.0.0.132:82"
+
+timestamp = int(time.time())
+
+# 第一步：向服务端请求签名
+payload1 = {
+    "username": "admin",
+    "password": "123456",
+    "timestamp": timestamp
+}
+resp1 = session.post(f"{base_url}/encrypt/get-signature.php", json=payload1)
+signature = resp1.json()["signature"]
+
+# 第二步：携带签名发送登录请求
+payload2 = {
+    "username": "admin",
+    "password": "123456",
+    "timestamp": timestamp,
+    "signature": signature
+}
+resp2 = session.post(f"{base_url}/encrypt/signdataserver.php", json=payload2)
+print(resp2.text)
+```
+
+### 11.4 关键坑点
+
+1. **两步的 timestamp 必须一致**：服务端会用同样的 timestamp 重新算一遍签名。
+2. **必须用 `requests.Session()`**：两步请求的 PHPSESSID 相同，否则服务端找不到对应的签名。
+3. **签名是服务端下发的**：前端无法自己计算，因为盐不在前端。
+
+### 11.5 核心认知
+
+- 这个关卡模拟真实业务中"签名服务"的架构：签名逻辑集中在服务端，前端只负责"转发"。
+- **优势**：签名规则更新时不需要改前端；盐不暴露在客户端。
+- **局限**：仍然需要请求服务端才能拿到签名，攻击者可以通过脚本模拟两步请求。
+- **真实业务里**，签名服务会附加更多前置条件：登录验证、短信验证码、限频、审计。
+
+## 十二、 总结与能力清单
+
+经过以上所有关卡的实战，完整掌握了前端加密、签名与防重放对抗的核心能力：
+
+| 能力 | 状态 |
+| :--- | :--- |
+| 前端 JS 逆向（含混淆代码） | ✅ |
+| 识别 AES / DES / RSA / HMAC 算法特征 | ✅ |
+| 提取写死、动态生成、服务端下发的 Key/IV | ✅ |
+| Python 复现 AES / DES 对称加密 | ✅ |
+| Python 复现 RSA 非对称加密 | ✅ |
+| Python 复现 AES+RSA 混合加密 | ✅ |
+| Python 复现 HMAC-SHA256 签名 | ✅ |
+| Burp Intruder 自动化爆破 | ✅ |
+| 处理两步请求与 Session 保持 | ✅ |
+| URL 编码 / Base64 / Hex 三种格式处理 | ✅ |
+| 服务端源码审计对齐 | ✅ |
+| 本地自检验证思路 | ✅ |
+| 时间窗口与防重放机制处理 | ✅ |
+
+**下一步进阶方向**：
+
+1. **autoDecoder 插件**：把 Python 脚本包装成 HTTP 服务，让 Burp 自动加解密。Burp 里看到的是明文，发出去的自动加密，实现"透明代理"效果。
+2. **mitmproxy 脚本**：跨工具复用加解密逻辑，支持 Burp + SQLMap + 自定义脚本协同。
+3. **实战拓展**：找真实网站进行完整的"抓包 → 定位 → 逆向 → 复现 → 自动化"闭环。
+
+## 十三、 附录：环境准备
+
+在 CentOS 7 或 Kali Linux 下，需安装依赖库：
+
+```bash
+pip3 install pycryptodome requests
+```
+
+> 注：安装包名是 `pycryptodome`，但导入时用 `from Crypto.xxx import xxx`，是历史兼容原因。
+
+**常用命令备忘**：
+
+```bash
+# Base64 编解码
+echo -n "hello" | base64
+echo "aGVsbG8=" | base64 -d
+
+# Hex 转换
+echo -n "hello" | xxd -p
+echo "68656c6c6f" | xxd -r -p
+
+# URL 编码
+python3 -c "import urllib.parse; print(urllib.parse.quote('a+b/c='))"
+```
