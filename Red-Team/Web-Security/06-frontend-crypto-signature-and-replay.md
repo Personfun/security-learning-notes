@@ -813,3 +813,167 @@ if __name__ == '__main__':
 - **越权测试**：修改 `userId=1` 到 `userId=2`，插件自动加密发送。
 - **重放测试**：时间戳过期？插件自动生成新时间戳。
 - **自动化扫描**：Burp Scanner 能像扫描普通网站一样扫描加密目标。
+
+## 十五、mitmproxy：可编程代理工具
+
+### 15.1 mitmproxy 是什么
+
+mitmproxy 是一个**独立的、可编程的中间人代理工具**，用 Python 编写。它和 Burp 一样工作在浏览器和服务器之间，抓取 HTTP/HTTPS 流量。
+
+**它包含三个命令**：
+
+| 命令 | 形态 | 用途 |
+| :--- | :--- | :--- |
+| `mitmproxy` | 命令行交互界面 | 手动拦截、查看、修改流量 |
+| `mitmweb` | 浏览器图形界面 | 类似 Burp Web UI，适合初学者 |
+| `mitmdump` | 无界面命令行 | 脚本自动化、批量处理 |
+
+### 15.2 和 Burp 的核心区别
+
+| 维度 | Burp | mitmproxy |
+| :--- | :--- | :--- |
+| **形态** | 桌面应用 | 命令行 / Web UI |
+| **加解密** | 需要装插件（autoDecoder） | **原生支持 Python 脚本** |
+| **界面** | 完善的图形界面 | mitmweb 界面较基础 |
+| **Repeater** | 有 | 有（点击请求 → Replay） |
+| **Intruder** | 有 | 无，需用脚本实现 |
+| **Scanner** | 有 | 无 |
+| **脚本机制** | 插件形式，受 API 限制 | 直接写 Python，无限制 |
+| **定位** | 综合渗透测试平台 | 可编程代理工具 |
+
+**两者看到的流量都是"浏览器发出的真实密文"**——因为都在代理层拦截。区别在于：
+
+- **Burp + autoDecoder**：在 Burp Repeater 里显示"你手写的明文"，插件自动加密后发送
+- **mitmproxy**：脚本拦截真实流量，需要在脚本里判断是明文还是密文
+
+### 15.3 和 autoDecoder 的对比
+
+| 维度 | autoDecoder | mitmproxy |
+| :--- | :--- | :--- |
+| **工作层次** | Burp 内部（Repeater/Intruder） | 真实代理层 |
+| **加解密逻辑** | 外部 Flask 服务 | 脚本直接内置 |
+| **交互方式** | 你在 Burp 里发明文 | 浏览器/工具直接发包 |
+| **适用范围** | 只在 Burp 内 | 所有走代理的工具 |
+| **部署** | Burp + Flask 两个组件 | 一个 mitmproxy 进程 |
+
+**核心差异**：
+- **autoDecoder**：让你在 Burp 里透明操作（改明文）
+- **mitmproxy**：让所有经过代理的工具（curl、SQLMap、ffuf 等）自动获得加解密能力
+
+### 15.4 mitmproxy 的真正价值
+
+**给不支持加密的第三方工具加透明加密。**
+
+典型场景：
+
+| 工具 | 场景 | 效果 |
+| :--- | :--- | :--- |
+| **SQLMap** | 测试加密网站的 SQL 注入 | SQLMap 发明文，mitmproxy 自动加密 |
+| **ffuf** | 目录扫描（参数需要加密） | ffuf 用明文，mitmproxy 自动加密 |
+| **curl** | 手动调试 | curl 发明文，mitmproxy 自动加密 |
+| **Burp** | 和 autoDecoder 互补 | Burp → mitmproxy → 目标 |
+
+**典型命令**：
+```bash
+curl -x http://127.0.0.1:8889 \
+  -X POST http://10.0.0.132:82/encrypt/aes.php \
+  -d 'encryptedData={"username":"admin","password":"123456"}'
+```
+curl 发的是**明文**，但经过 mitmproxy 后，靶场收到的是**密文**。
+
+### 15.5 快速上手
+
+**1. 启动 mitmweb**：
+```bash
+mitmweb --listen-port 8889
+```
+
+- **8889**：代理端口（浏览器要连这个）
+- **8081**：Web UI 端口（浏览器访问这个看流量）
+
+**2. 配置浏览器代理**：`127.0.0.1:8889`
+
+**3. 访问 `http://127.0.0.1:8081`** 查看流量
+
+**4. 加载 Python 脚本**：
+```bash
+mitmweb --listen-port 8889 -s ~/aes_mitm.py
+```
+
+### 15.6 mitmproxy 脚本示例
+
+**核心机制**：脚本定义几个回调函数，mitmproxy 在流量经过时自动调用。
+
+```python
+from mitmproxy import http
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
+import base64
+import urllib.parse
+
+KEY = b'1234567890123456'
+IV  = b'1234567890123456'
+PREFIX = 'encryptedData='
+
+def aes_encrypt(plaintext):
+    cipher = AES.new(KEY, AES.MODE_CBC, IV)
+    padded = pad(plaintext.encode('utf-8'), 16)
+    b64 = base64.b64encode(cipher.encrypt(padded)).decode('utf-8')
+    return urllib.parse.quote(b64, safe='')
+
+def is_plaintext(value):
+    """判断是否为明文（JSON 以 { 开头，包含 username）"""
+    return value.startswith('{') and 'username' in value
+
+def request(flow: http.HTTPFlow):
+    """每个请求经过时触发"""
+    if '/encrypt/aes.php' not in flow.request.path:
+        return
+
+    body = flow.request.get_text()
+    if body.startswith(PREFIX):
+        value = body[len(PREFIX):]
+        if is_plaintext(value):
+            # 是明文 → 加密
+            encrypted = aes_encrypt(value)
+            flow.request.set_text(f'{PREFIX}{encrypted}')
+            print(f"[请求] 明文 → 已加密")
+        else:
+            print(f"[请求] 已是密文，跳过")
+
+def response(flow: http.HTTPFlow):
+    """每个响应回来时触发"""
+    if '/encrypt/aes.php' in flow.request.path:
+        body = flow.response.get_text()
+        print(f"[响应] {body[:80]}")
+```
+
+**加载方式**：
+```bash
+mitmweb --listen-port 8889 -s ~/aes_mitm.py
+```
+
+### 15.7 踩坑记录：mitmproxy 不能替代 autoDecoder
+
+**问题**：在浏览器里点登录时，mitmproxy 脚本收到的是**浏览器已经加密的密文**，不是明文。
+
+**原因**：
+- Burp + autoDecoder 在 **Repeater 层**工作，你手写的内容就是明文，插件负责加密
+- mitmproxy 在**代理层**工作，浏览器发出的流量已经是密文
+
+**结论**：
+- 想"在 Burp 里发明文" → 用 autoDecoder
+- 想"让第三方工具自动加密" → 用 mitmproxy
+- 两者不冲突，可以互补
+
+### 15.8 实战场景总结
+
+| 场景 | 推荐工具 |
+| :--- | :--- |
+| 在 Burp 里测试加密网站（Intruder 爆破、SQL 注入） | autoDecoder |
+| 让 SQLMap 测加密网站 | mitmproxy |
+| 让 ffuf 扫加密 API | mitmproxy |
+| 让 curl 调加密接口 | mitmproxy |
+| 需要复杂流量处理逻辑 | mitmproxy |
+| 习惯用 Burp 图形界面 | autoDecoder |
+| 无图形界面环境（SSH 远程） | mitmproxy |
