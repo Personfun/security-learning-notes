@@ -19,7 +19,7 @@
 | **混合加密** | AES + RSA（工业级方案） |
 | **签名** | 明文加签（HMAC-SHA256）、加签 key 在服务端 |
 | **防重放** | RSA 加密时间戳 + 3 秒窗口 + requestID |
-| **逆向技术** | XHR/DOM/条件断点、Override/Proxy Hook |
+| **逆向技术** | XHR/DOM/条件断点、Override/Proxy Hook、debugger 绕过、反 Hook 检测绕过 |
 | **自动化** | autoDecoder 透明代理、mitmproxy 脚本 |
 
 - **测试环境**：CentOS 7 Docker 部署 `encrypt-labs`
@@ -647,9 +647,199 @@ print(resp2.text)
 - **局限**：仍然需要请求服务端才能拿到签名，攻击者可以通过脚本模拟两步请求。
 - **真实业务里**，签名服务会附加更多前置条件：登录验证、短信验证码、限频、审计。
 
-## 十二、 Chrome DevTools 断点与 Hook 技术
+## 十二、 前端反调试对抗
 
-### 12.1 三种核心断点
+### 12.1 debugger 是什么
+
+`debugger` 是 JavaScript 的关键字，作用是让浏览器在执行到这一行时暂停。
+
+**开发者的用途**：调试代码时手动设断点。
+
+**网站的用途**：反调试——阻止攻击者用 DevTools 分析代码。
+
+### 12.2 无限 debugger 的原理
+
+**核心**：把 debugger 放进循环里，让它持续触发。
+
+```javascript
+// 方式 1：setInterval
+setInterval(function() {
+    debugger;
+}, 500);
+
+// 方式 2：函数递归
+function antiDebug() {
+    debugger;
+    antiDebug();
+}
+
+// 方式 3：eval / Function 动态生成
+setInterval(Function("debugger"), 1000);
+```
+
+**效果**：你一按 F8 释放，500 毫秒后又暂停，根本没法操作。
+
+### 12.3 debugger 绕过方法
+
+#### 方法 1：取消勾选 Pause on debugger statement（最简单）
+
+**操作**：
+1. F12 → Debugger/Sources 面板
+2. 右侧 Breakpoints 区域
+3. 取消勾选 **Pause on debugger statement**
+4. 按 F8
+
+**原理**：告诉浏览器忽略所有 debugger 关键字。
+**优点**：一键解决，无论 debugger 藏多深。
+**缺点**：自己的断点也失效（但多数场景不影响分析）。
+
+#### 方法 2：重写 setInterval / Function / eval
+
+```javascript
+// 保存原始函数
+var _originalSetInterval = setInterval;
+
+// 重写：检测函数体里有没有 "debugger"
+setInterval = function(fn, delay, ...args) {
+    var fnStr = fn.toString();
+    if (fnStr.includes('debugger')) {
+        console.log("[绕过] 拦截到 debugger");
+        return -1;
+    }
+    return _originalSetInterval.apply(this, [fn, delay, ...args]);
+};
+```
+
+**适用场景**：网站用静态 `setInterval(function() { debugger; })` 触发时。
+
+#### 方法 3：本地 Override 覆盖脚本
+
+**操作**：
+1. F12 → Sources → Overrides → Select folder
+2. 打开被 debugger 污染的 JS 文件
+3. 右键 → Save for overrides
+4. 编辑本地文件，删掉所有 debugger
+5. 刷新页面
+
+**适用场景**：debugger 藏得很深、很多时，一劳永逸。
+
+### 12.4 debugger 和 XHR/DOM 断点的关系
+
+| 断点类型 | 触发时机 | 谁触发 |
+| :--- | :--- | :--- |
+| **debugger 断点** | 执行到 `debugger` 关键字时 | 网站埋的（反调试） |
+| **XHR/fetch 断点** | 浏览器发起指定请求时 | 你手动设的 |
+| **DOM 断点** | 事件触发（点击/提交）时 | 你手动设的 |
+
+**关系**：不绕过 debugger，你**根本没法**用 XHR/DOM 断点做正常分析——因为 debugger 会不停打断你。
+
+**所以，绕过 debugger 是"分析之前的第一个动作"。**
+
+### 12.5 反 Hook 检测的原理
+
+网站通过对比函数的"指纹"，发现函数是否被 Hook 过。
+
+**核心 4 种检测方式**：
+
+| 检测方式 | 原理 | 概率 |
+| :--- | :--- | :--- |
+| **toString 检测** | 检查函数源码里有没有特征字符串 | 最常用 |
+| **属性描述符检测** | 检查 `writable` / `configurable` 属性 | 中 |
+| **Proxy 检测** | 通过陷阱判断对象是否被代理 | 低 |
+| **console 检测** | 检查 `console.log.toString()` 有无 `[native code]` | 低 |
+
+### 12.6 反 Hook 检测的绕过方法
+
+#### 绕过 1：Override + 伪装 toString
+
+```javascript
+var _original = myEncrypt;
+var originalSource = myEncrypt.toString();
+
+myEncrypt = function(data) {
+    console.log("[Hook] 参数:", data);
+    return _original(data);
+};
+
+// 关键：伪装新函数的 toString
+myEncrypt.toString = function() {
+    return originalSource;
+};
+```
+
+**效果**：网站检查 `toString()` 时，拿到原始源码字符串，不会发现被 Hook。
+
+#### 绕过 2：Proxy + 伪装 toString
+
+**重要坑点**：Firefox 和 Chromium 的 `Function.prototype.toString` 对 Proxy 有特殊处理——只要 `this` 是 Proxy，就返回 `[native code]`，**会暴露 Hook**。
+
+**修正**：手动给 Proxy 设置 toString。
+
+```javascript
+var target = myEncrypt;
+var originalSource = myEncrypt.toString();
+
+myEncrypt = new Proxy(target, {
+    apply: function(t, thisArg, args) {
+        console.log("[Proxy Hook] 参数:", args);
+        return t.apply(thisArg, args);
+    }
+});
+
+// 关键：给 Proxy 手动设置 toString
+Object.defineProperty(myEncrypt, 'toString', {
+    value: function() { return originalSource; },
+    writable: false,
+    enumerable: false,
+    configurable: true
+});
+```
+
+**效果**：绕过 toString 检测，Hook 仍然有效。
+
+#### 绕过 3：不用 console.log
+
+如果网站检测 `console.log` 是否被 Hook，改用 `sessionStorage` 存储日志：
+
+```javascript
+var _originalEncrypt = CryptoJS.AES.encrypt;
+CryptoJS.AES.encrypt = function(data, key, options) {
+    sessionStorage.setItem('hook_log', 
+        "明文: " + data + " | Key: " + key.toString(CryptoJS.enc.Utf8)
+    );
+    return _originalEncrypt.apply(this, arguments);
+};
+
+// 查看日志
+// sessionStorage.getItem('hook_log')
+```
+
+### 12.7 实战决策树
+
+```
+遇到反 Hook 检测
+    ↓
+第一步：判断检测类型
+    ├── 报"函数被篡改" → toString 检测
+    ├── 报"行为异常" → 属性描述符 / Proxy 检测
+    └── 综合拒绝执行 → 多重检测
+    ↓
+第二步：选绕过方式
+    ├── 简单场景 → Override + 伪装 toString
+    ├── 严格场景 → Proxy + 伪装 toString
+    └── 极端场景 → 不用 console.log + defineProperty 隐藏痕迹
+```
+
+### 12.8 核心认知
+
+- **debugger 绕过和 XHR/DOM 断点是"互斥"的**——不绕过 debugger，你根本没法正常用断点分析。
+- **Proxy 不是"天然绕过 toString"**——Firefox 和 Chromium 上，Proxy 会暴露 `[native code]`，必须手动伪装 toString。
+- **反 Hook 检测和绕过是"军备竞赛"**——网站会不断升级检测手段，攻击者也在不断升级绕过方式。
+- **实战中最常用的是 Override + 伪装 toString**——简单、有效、覆盖 90% 的场景。
+
+## 十三、 Chrome DevTools 断点与 Hook 技术
+
+### 13.1 三种核心断点
 
 #### XHR/fetch 断点（最常用）
 **用途**：请求发出时自动断下，从调用栈回溯加密函数。
@@ -677,7 +867,7 @@ print(resp2.text)
 2. 右键行号 → Add conditional breakpoint
 3. 输入条件（如 `_0x54dcc5 === 'admin'`）
 
-### 12.2 断点触发后的三个动作
+### 13.2 断点触发后的三个动作
 
 **1. 看 Call Stack（调用栈）**
 从下往上看调用链，找到加密函数所在层：
@@ -702,7 +892,7 @@ CryptoJS.enc.Utf8.stringify(_0x2d9cd5)  // → "1234567890123456"
 _0x807d91  // → {"username":"admin","password":"123456"}
 ```
 
-### 12.3 Hook 技术
+### 13.3 Hook 技术
 
 **Hook = 给函数装监听器**，函数被调用时自动打印入参出参。
 
@@ -767,7 +957,7 @@ window.targetFunction = new Proxy(window.targetFunction, handler);
 
 **用途**：拦截对象属性读取和函数调用，不易被反调试检测。
 
-### 12.4 断点 vs Hook 对比
+### 13.4 断点 vs Hook 对比
 
 | 维度 | 断点 | Hook |
 | :--- | :--- | :--- |
@@ -783,7 +973,7 @@ window.targetFunction = new Proxy(window.targetFunction, handler);
 2. 再用断点深入分析调用链 → 5 分钟
 3. 最后用 Python 复现 + autoDecoder 自动化
 
-### 12.5 实战坑点：Hook 日志丢失问题
+### 13.5 实战坑点：Hook 日志丢失问题
 
 **问题现象**：
 在 Console 里粘贴 Hook 代码后，点击登录，Hook 打印正常输出，但登录成功后页面跳转到 `success.html`，**Console 立即清空，Hook 输出全丢了**。
@@ -818,19 +1008,19 @@ CryptoJS.AES.encrypt = function(data, key, options) {
 > **Hook 负责"抓"，断点负责"暂停"。**
 > **两者配合才能完整看到加密过程，尤其是页面会跳转的场景。**
 
-### 12.6 关键认知
+### 13.6 关键认知
 - **断点不是"暂停"，是"透明观察"**——你可以看到函数执行时的所有内部状态。
 - **Hook 不是"修改代码"，是"包装函数"**——原函数逻辑不变，只是多了日志。
 - **WordArray 要转成字符串**——CryptoJS 的 Key/IV 是 WordArray 对象，必须用 `CryptoJS.enc.Utf8.stringify()` 才看得懂。
 - **断点用 F8 释放**：忘了释放页面会一直卡住。
 
-## 十三、autoDecoder 透明代理配置
+## 十四、 autoDecoder 透明代理配置
 
-### 13.1 目标
+### 14.1 目标
 让 Burp 里永远显示明文，发出去的自动加密，收到的自动解密。
 之后 Intruder 爆破、SQLMap 注入、越权测试，都可以像未加密网站一样操作。
 
-### 13.2 架构
+### 14.2 架构
 ```
 ┌─────────┐  明文   ┌──────────────┐  密文  ┌──────────┐
 │  Burp   │ ─────→ │ autoDecoder  │ ────→ │  服务器  │
@@ -839,7 +1029,7 @@ CryptoJS.AES.encrypt = function(data, key, options) {
 └─────────┘  明文   └──────────────┘  密文  └──────────┘
 ```
 
-### 13.3 三步配置
+### 14.3 三步配置
 
 **第一步：写 Flask 加解密服务**
 
@@ -913,18 +1103,18 @@ if __name__ == '__main__':
 | **接口加解密** | Encode URL: `http://127.0.0.1:8888/encode`，Decode URL: `http://127.0.0.1:8888/decode` |
 | 保存配置 | 会弹出文件对话框，选默认路径即可 |
 
-### 13.4 使用方式
+### 14.4 使用方式
 - **Repeater 的 `autoDecoder` 子标签**：显示明文（可编辑），在这里改请求。
 - **原始 `Pretty` / `Raw` 标签**：显示密文（只读），用来查看真实发送内容。
 - **发送后**：插件自动加密 → 服务端返回密文 → 插件自动解密 → Burp 显示明文。
 
-### 13.5 踩坑记录
+### 14.5 踩坑记录
 1. **Flask 参数名**：必须是 `dataBody`，不是 `data`。
 2. **Base64 里的 `+`**：必须 URL 编码，否则服务端解析时被当空格，导致 `Invalid input`。
 3. **原始编辑区被锁**：这是插件设计，改明文要去 `autoDecoder` 子标签。
 4. **域名匹配**：只填域名，不带端口（如 `10.0.0.132`）。
 
-### 13.6 实战验证：Intruder 明文字典爆破
+### 14.6 实战验证：Intruder 明文字典爆破
 
 **测试目标**：AES 固定 Key 关卡的登录密码。
 
@@ -956,9 +1146,9 @@ if __name__ == '__main__':
 - **重放测试**：时间戳过期？插件自动生成新时间戳。
 - **自动化扫描**：Burp Scanner 能像扫描普通网站一样扫描加密目标。
 
-## 十四、mitmproxy：可编程代理工具
+## 十五、 mitmproxy：可编程代理工具
 
-### 14.1 mitmproxy 是什么
+### 15.1 mitmproxy 是什么
 
 mitmproxy 是一个**独立的、可编程的中间人代理工具**，用 Python 编写。它和 Burp 一样工作在浏览器和服务器之间，抓取 HTTP/HTTPS 流量。
 
@@ -970,7 +1160,7 @@ mitmproxy 是一个**独立的、可编程的中间人代理工具**，用 Pytho
 | `mitmweb` | 浏览器图形界面 | 类似 Burp Web UI，适合初学者 |
 | `mitmdump` | 无界面命令行 | 脚本自动化、批量处理 |
 
-### 14.2 和 Burp 的核心区别
+### 15.2 和 Burp 的核心区别
 
 | 维度 | Burp | mitmproxy |
 | :--- | :--- | :--- |
@@ -988,7 +1178,7 @@ mitmproxy 是一个**独立的、可编程的中间人代理工具**，用 Pytho
 - **Burp + autoDecoder**：在 Burp Repeater 里显示"你手写的明文"，插件自动加密后发送
 - **mitmproxy**：脚本拦截真实流量，需要在脚本里判断是明文还是密文
 
-### 14.3 和 autoDecoder 的对比
+### 15.3 和 autoDecoder 的对比
 
 | 维度 | autoDecoder | mitmproxy |
 | :--- | :--- | :--- |
@@ -1002,7 +1192,7 @@ mitmproxy 是一个**独立的、可编程的中间人代理工具**，用 Pytho
 - **autoDecoder**：让你在 Burp 里透明操作（改明文）
 - **mitmproxy**：让所有经过代理的工具（curl、SQLMap、ffuf 等）自动获得加解密能力
 
-### 14.4 mitmproxy 的真正价值
+### 15.4 mitmproxy 的真正价值
 
 **给不支持加密的第三方工具加透明加密。**
 
@@ -1023,7 +1213,7 @@ curl -x http://127.0.0.1:8889 \
 ```
 curl 发的是**明文**，但经过 mitmproxy 后，靶场收到的是**密文**。
 
-### 14.5 快速上手
+### 15.5 快速上手
 
 **1. 启动 mitmweb**：
 ```bash
@@ -1042,7 +1232,7 @@ mitmweb --listen-port 8889
 mitmweb --listen-port 8889 -s ~/aes_mitm.py
 ```
 
-### 14.6 mitmproxy 脚本示例
+### 15.6 mitmproxy 脚本示例
 
 **核心机制**：脚本定义几个回调函数，mitmproxy 在流量经过时自动调用。
 
@@ -1095,7 +1285,7 @@ def response(flow: http.HTTPFlow):
 mitmweb --listen-port 8889 -s ~/aes_mitm.py
 ```
 
-### 14.7 踩坑记录：mitmproxy 不能替代 autoDecoder
+### 15.7 踩坑记录：mitmproxy 不能替代 autoDecoder
 
 **问题**：在浏览器里点登录时，mitmproxy 脚本收到的是**浏览器已经加密的密文**，不是明文。
 
@@ -1108,7 +1298,7 @@ mitmweb --listen-port 8889 -s ~/aes_mitm.py
 - 想"让第三方工具自动加密" → 用 mitmproxy
 - 两者不冲突，可以互补
 
-### 14.8 实战场景总结
+### 15.8 实战场景总结
 
 | 场景 | 推荐工具 |
 | :--- | :--- |
@@ -1120,7 +1310,7 @@ mitmweb --listen-port 8889 -s ~/aes_mitm.py
 | 习惯用 Burp 图形界面 | autoDecoder |
 | 无图形界面环境（SSH 远程） | mitmproxy |
 
-## 十五、 总结与能力清单
+## 十六、 总结与能力清单
 
 经过以上所有关卡的实战，完整掌握了 Web 前端加解密逆向与自动化的核心能力：
 
@@ -1129,6 +1319,8 @@ mitmweb --listen-port 8889 -s ~/aes_mitm.py
 | 前端 JS 逆向（含混淆代码） | ✅ |
 | XHR / DOM / 条件断点 | ✅ |
 | Override / defineProperty / Proxy 三种 Hook | ✅ |
+| debugger 绕过（取消勾选、重写 setInterval、本地 Override） | ✅ |
+| 反 Hook 检测绕过（伪装 toString、Proxy + 伪装） | ✅ |
 | 识别 AES / DES / RSA / HMAC 算法特征 | ✅ |
 | 提取写死、动态生成、服务端下发的 Key/IV | ✅ |
 | Python 复现 AES / DES 对称加密 | ✅ |
@@ -1147,7 +1339,7 @@ mitmweb --listen-port 8889 -s ~/aes_mitm.py
 **核心方法论**：
 
 ```
-前端 JS 逆向（断点 + Hook）→ 提取算法参数 → Python 复现 → 本地自检
+前端 JS 逆向（断点 + Hook + 反调试绕过）→ 提取算法参数 → Python 复现 → 本地自检
     ↓
 autoDecoder 透明代理（Burp 内部加解密）
     ↓
@@ -1158,10 +1350,10 @@ Intruder 爆破 / SQL 注入 / 越权测试 → 像未加密网站一样测试
 
 1. **真实网站实战**：找真实网站进行完整的"抓包 → 定位 → 逆向 → 复现 → 自动化"闭环。
 2. **签名逆向深化**：处理 HMAC、RSA 签名、多层签名等复杂场景。
-3. **反调试绕过**：处理 `debugger` 死循环、反 Hook 检测等反调试机制。
-4. **JSVMP 与 AST 还原**：处理虚拟机保护和 AST 代码混淆。
+3. **JSVMP 与 AST 还原**：处理虚拟机保护和 AST 代码混淆。
+4. **无头浏览器自动化**：用 Playwright / Puppeteer 批量处理加密请求。
 
-## 十六、 附录：环境准备
+## 十七、 附录：环境准备
 
 在 CentOS 7 或 Kali Linux 下，需安装依赖库：
 
